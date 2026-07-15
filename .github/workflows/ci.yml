@@ -1,0 +1,31 @@
+name: mes tcc arm bugs
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Three independent jobs, one per case. Each rebuilds the shared from-source
+# toolchain (bootstrap.sh) and then runs its own MesCC compile of the whole
+# tcc.c translation unit under qemu-arm -- a multi-hour job on a GitHub
+# runner, so each has a generous timeout. bug1-parse fails in the parser and
+# is the quickest; bug2-token and fixed each carry a full ~TU compile.
+jobs:
+  repro:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mode: parse, name: "bug1-parse  (arm-gen.c avregs = {0})" }
+          - { mode: token, name: "bug2-token  (TOK___memmove under EABI)" }
+          - { mode: fixed, name: "fixed       (tcc-mes runs + builds a hello)" }
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install qemu-user (AArch32 execution)
+        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-user-static
+      - name: Bootstrap (stage0 hex0 seed -> armv7l mes-m2 -> nyacc -> fetch tcc)
+        run: ./bootstrap.sh
+      - name: "Reproduce: ${{ matrix.mode }}"
+        run: ./repro.sh ${{ matrix.mode }}

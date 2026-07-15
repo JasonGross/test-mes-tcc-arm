@@ -1,0 +1,9 @@
+
+# Registers R8-R10 in {reg} operand form: required by current M2-Planet
+# armv7l codegen; values match M2libc armv7l/armv7l_defs.M1 (a strict
+# superset of mes's stale lib/m2/arm/arm_defs.M1 - 90 shared macros with
+# identical values, plus these 3). Without them mes 0.27.1's own kaem.arm
+# fails at M1 with "Received invalid other; {R8}", so mes-m2 can't be built.
+DEFINE {R8} 0001
+DEFINE {R9} 0002
+DEFINE {R10} 0004
