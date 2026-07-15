@@ -14,10 +14,13 @@
 #          tcctok.h only DEFs that token `#ifndef TCC_ARM_EABI`, so an EABI
 #          build references an undefined token that leaks as a symbol.
 #
-#   fixed  fix1 + fix2 (+ arm-aeabi-mem.c runtime wrappers). tcc.c compiles
-#          and links to a working armv7l `tcc-mes`: `tcc-mes -version` prints
-#          "tcc version 0.9.26", and tcc-mes compiles hello.c to an arm ELF
-#          that runs under qemu-arm.
+#   fixed  fix1 + fix2 + fix3 (+ arm-aeabi-mem.c runtime wrappers). tcc.c
+#          compiles and links to a working armv7l `tcc-mes`: `tcc-mes -version`
+#          prints "tcc version 0.9.26", and tcc-mes compiles hello.c to an arm
+#          ELF that RUNS under qemu-arm and prints its message (exit 0). fix3
+#          (arm-gen.c CMP-SBZ) is what makes that ELF run: without it the
+#          `while(s[i])` loops in the tcc-compiled libc emit a CMP with a
+#          non-zero SBZ field (0xe3511000) that qemu faults as SIGILL.
 #
 # Exit status is non-zero unless the selected expectation holds exactly.
 set -eu
@@ -46,7 +49,10 @@ cd "$TCCDIR"
 case "$MODE" in
   parse) msg "mode parse: STOCK tarball, no fixes" ;;
   token) msg "mode token: fix1 (arm-gen.c) only"; patch -p1 < "$HERE/fix1-arm-gen.patch" ;;
-  fixed) msg "mode fixed: fix1 + fix2"; patch -p1 < "$HERE/fix1-arm-gen.patch"; patch -p1 < "$HERE/fix2-tccgen.patch" ;;
+  fixed) msg "mode fixed: fix1 + fix2 + fix3"
+         patch -p1 < "$HERE/fix1-arm-gen.patch"
+         patch -p1 < "$HERE/fix2-tccgen.patch"
+         patch -p1 < "$HERE/fix3-arm-cmp.patch" ;;
   *) echo "unknown mode: $MODE"; exit 2 ;;
 esac
 
@@ -91,13 +97,22 @@ print("\n".join(out))' "$1" "$2"; }
   LIBC_LAYER=$(layer "$libc_SOURCES" "$libc_mini_SOURCES")
   LIBCTCC_LAYER=$(layer "$libc_tcc_SOURCES" "$libc_SOURCES")
   cc() { MESCC -D HAVE_CONFIG_H=1 -I include -I include/linux/arm -c "$@"; }
-  cat_layer() { : > "$1.c"; shift; for f in "$@"; do cat "$f"; done >> "$1.c"; }
+  # NB: capture the output name before `shift` -- after shifting, $1 is the
+  # first source path, so `>> "$1.c"` would write to the wrong file.
+  cat_layer() { _out="$1.c"; shift; : > "$_out"; for f in "$@"; do cat "$f"; done >> "$_out"; }
   A="$M/lib/arm-mes"; mkdir -p "$A"
   cc lib/linux/arm-mes-mescc/crt1.c -o "$A/crt1.o"
-  cat_layer libc-mini $MINI;        cc libc-mini.c; cp libc-mini.o "$A/libc-mini.a"
-  cat_layer libmescc  $MESCCL;      cc libmescc.c;  cp libmescc.o  "$A/libmescc.a"
-  cat_layer libc      $LIBC_LAYER;  cc libc.c;      cat "$A/libc-mini.a" libc.o     > "$A/libc.a"
-  cat_layer libctcc   $LIBCTCC_LAYER; cc libctcc.c; cat "$A/libc.a"      libctcc.o  > "$A/libc+tcc.a"
+  # mescc's linker resolves each `-l NAME` to BOTH libNAME.a (the hex2 object
+  # archive) and libNAME.s (the M1-source archive), so build the two in lockstep
+  # for every layer -- omitting the .s is "mescc: file not found: .../libNAME.s".
+  cat_layer libc-mini $MINI;          cc libc-mini.c
+  cp libc-mini.o "$A/libc-mini.a";    cp libc-mini.s "$A/libc-mini.s"
+  cat_layer libmescc  $MESCCL;        cc libmescc.c
+  cp libmescc.o  "$A/libmescc.a";     cp libmescc.s  "$A/libmescc.s"
+  cat_layer libc      $LIBC_LAYER;    cc libc.c
+  cat "$A/libc-mini.a" libc.o > "$A/libc.a";   cat "$A/libc-mini.s" libc.s > "$A/libc.s"
+  cat_layer libctcc   $LIBCTCC_LAYER; cc libctcc.c
+  cat "$A/libc.a" libctcc.o > "$A/libc+tcc.a"; cat "$A/libc.s" libctcc.s > "$A/libc+tcc.s"
   ls -la "$A"
 }
 
@@ -116,7 +131,8 @@ case "$MODE" in
     tail -25 s.log
     [ "$rc" -ne 0 ] || die "MesCC -S unexpectedly succeeded on the stock tree"
     grep -q "parse failed" s.log || die "no 'parse failed' in MesCC output"
-    grep -q "on input {"   s.log || die "parser did not stop on '{'"
+    # nyacc prints the offending token quoted: `on input "{"`.
+    grep -qE 'on input "?\{' s.log || die "parser did not stop on '{' (avregs = {0})"
     echo "PASS: stock tcc.c fails MesCC parse at the brace-assignment (bug 1)"
     ;;
 
@@ -175,13 +191,44 @@ CFG
     for f in $libc_gnu_SOURCES; do cat "$M/$f"; done >> unified-libc.c
     TCC="$TCCDIR/tcc-mes"
     tcc_cc() { run_arm "$TCC" -c -D HAVE_CONFIG_H=1 -I include -I include/linux/arm "$@"; }
-    # mes-arm-crt1 prerequisite (orthogonal to the two tcc bugs): the __TINYC__
-    # _start in arm-mes-gcc/crt1.c calls `main ()` bare, which a strict-arg-check
-    # tcc rejects against main's 3-arg prototype. A no-prototype decl under
-    # __TINYC__ passes and still emits the intended `bl main`.
-    sed -i 's|^int main (int argc, char \*argv\[\], char \*envp\[\]);|#if !__TINYC__\nint main (int argc, char *argv[], char *envp[]);\n#else\nint main ();\n#endif|' \
-      lib/linux/arm-mes-gcc/crt1.c
+    # Two mes-arm-crt1 prerequisites (orthogonal to the tcc bugs; both
+    # upstreamable -- arm crt1 was never validated against a strict tcc):
+    #  (a) the __TINYC__ _start calls `main ()` bare, which a strict-arg-check
+    #      tcc rejects against main's 3-arg prototype -- a no-prototype decl
+    #      under __TINYC__ passes and still emits the intended `bl main`;
+    #  (b) that _start loaded argc/argv/envp into r0-r2 and THEN called
+    #      __init_io() (a C call clobbers r0-r3) before main() with no reload,
+    #      so main saw garbage argv -- move the reload to after __init_io().
+    python3 - lib/linux/arm-mes-gcc/crt1.c <<'PY'
+import sys
+f=sys.argv[1]; s=open(f).read()
+old_decl='#include <mes/lib-mini.h>\nint main (int argc, char *argv[], char *envp[]);'
+new_decl=('#include <mes/lib-mini.h>\n#if !__TINYC__\n'
+          'int main (int argc, char *argv[], char *envp[]);\n#else\n'
+          'int main ();\n#endif')
+if old_decl in s: s=s.replace(old_decl,new_decl,1)
+elif '#if !__TINYC__' not in s: sys.exit("crt1.c: main decl pattern not found")
+old_start=('  // setup argc, argv, envp parameters in registers\n'
+           '  __asm__ (".int 0xe59d0000\\n"); //ldr   r0, [sp]\n'
+           '  __asm__ (".int 0xe59d1004\\n"); //ldr   r1, [sp, #4]\n'
+           '  __asm__ (".int 0xe59d2008\\n"); //ldr   r2, [sp, #8]\n'
+           '  __init_io ();\n  main ();')
+new_start=('  __init_io ();\n'
+           '  // reload argc/argv/envp AFTER __init_io() (a C call clobbers r0-r3)\n'
+           '  __asm__ (".int 0xe59d0000\\n"); //ldr   r0, [sp]\n'
+           '  __asm__ (".int 0xe59d1004\\n"); //ldr   r1, [sp, #4]\n'
+           '  __asm__ (".int 0xe59d2008\\n"); //ldr   r2, [sp, #8]\n'
+           '  main ();')
+if old_start in s: s=s.replace(old_start,new_start,1)
+elif '__init_io ();\n  // reload' not in s: sys.exit("crt1.c: _start reload pattern not found")
+open(f,'w').write(s)
+PY
     tcc_cc -o "$LIBDIR/crt1.o" lib/linux/arm-mes-gcc/crt1.c
+    # tcc emits crti/crtn into a -static link (the begin/end frames of
+    # .init/.fini); mes ships real arm crti.c/crtn.c. Empty stubs would give
+    # tcc a bad link, so compile the real ones.
+    tcc_cc -o "$LIBDIR/crti.o" lib/linux/arm-mes-gcc/crti.c
+    tcc_cc -o "$LIBDIR/crtn.o" lib/linux/arm-mes-gcc/crtn.c
     tcc_cc -o unified-libc.o unified-libc.c
     run_arm "$TCC" -ar cr "$LIBDIR/libc.a" unified-libc.o
     # libtcc1.a: arm helpers + the EABI mem wrappers (arm-aeabi-mem.c).
@@ -194,33 +241,25 @@ CFG
 
     msg "tcc-mes compiles hello.c -> armv7l ELF"
     out="$WORK/hello-arm"
-    run_arm "$TCC" -static -o "$out" -L "$LIBDIR" \
+    run_arm "$TCC" -static -o "$out" -L "$LIBDIR" -L "$LIBDIR/tcc" \
       -I "$PREFIX/include/mes" -I "$PREFIX/include/mes/linux/arm" "$HERE/hello.c"
     test -x "$out" || die "tcc-mes did not produce a hello binary"
     file "$out"
     case "$(file "$out")" in *"ELF 32-bit"*ARM*) : ;; *) die "hello is not an armv7l ELF" ;; esac
-    echo "PASS: fix1+fix2 -> MesCC builds a working tcc-mes (version 0.9.26) that"
-    echo "      compiles+links tcc.c and compiles hello.c to an armv7l ELF."
 
-    # Running that ELF is a SEPARATE, still-open bug (not one of the two MR
-    # bugs): tcc's arm codegen mis-emits cross-object (libc) calls, so any
-    # tcc-mes-compiled program that calls a library function faults at runtime
-    # (a valid ARM instruction, CPU in ARM state -- not interworking). It is
-    # present in the pristine tarball (arm-link.c unchanged) and is tracked as
-    # milestone-3 tcc-boot-arm work, independent of fix1/fix2. We RUN the ELF
-    # and report the outcome without failing the job; flip RUN_HELLO_MUST_PASS=1
-    # to hard-assert it once that bug is fixed.
-    msg "run hello.c under qemu-arm (reported; see note above)"
+    # Run it. This is the hard proof that fix3 (CMP-SBZ) is correct: hello's
+    # printf path runs `while (s[i])` loops in the tcc-compiled libc, whose
+    # `cmp rN,#0` -- without fix3 -- carries a non-zero SBZ field (0xe3511000)
+    # that qemu faults as SIGILL. With all three fixes the ELF runs and prints.
+    msg "run the tcc-mes-compiled hello under qemu-arm (must print + exit 0)"
     set +e
     got=$(run_arm "$out" 2>&1); rc=$?
     set -e
     echo "hello output: [$got] (exit $rc)"
-    if [ "$got" = "hello from tcc-armv7l" ] && [ "$rc" -eq 0 ]; then
-      echo "BONUS: the armv7l ELF also runs correctly under qemu-arm"
-    else
-      echo "NOTE: the ELF does not run yet (open milestone-3 tcc-arm codegen bug,"
-      echo "      unrelated to the two bugs this repo demonstrates)."
-      [ "${RUN_HELLO_MUST_PASS:-0}" = 1 ] && die "hello did not run (RUN_HELLO_MUST_PASS=1)"
-    fi
+    [ "$rc" -eq 0 ] || die "hello did not exit 0 (exit $rc) -- see fix3/CMP-SBZ"
+    [ "$got" = "hello from tcc-armv7l" ] || die "hello printed the wrong text: [$got]"
+    echo "PASS: fix1+fix2+fix3 -> MesCC builds a working tcc-mes (version 0.9.26)"
+    echo "      that compiles+links tcc.c AND compiles a hello.c that runs under"
+    echo "      qemu-arm and prints correctly."
     ;;
 esac

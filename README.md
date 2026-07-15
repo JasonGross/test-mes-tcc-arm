@@ -1,20 +1,25 @@
-# Two arm/EABI bugs block the MesCC armv7l bootstrap of janneke's tcc
+# Three arm bugs block the MesCC armv7l bootstrap of janneke's tcc
 
 **Summary.** janneke's mes fork of tcc (`tcc-0.9.26-1147-gee75a10c`, the
 tarball [live-bootstrap](https://github.com/fosslinux/live-bootstrap) pins)
 ships a complete ARM backend, but it has never been driven through MesCC for
-a 32-bit-ARM (`TCC_ARM_EABI`) `BOOTSTRAP` build. Two small source bugs stop
-it — one at MesCC parse time, one at the hex2 link — and once both are
-fixed the whole `tcc.c` translation unit compiles under MesCC to a working
-armv7l `tcc`. This repo proves all of that **from source** in CI: the hex0
-seed builds stage0-posix, that builds an armv7l `mes-m2`, and that runs
-MesCC over tcc's own source under `qemu-arm`.
+a 32-bit-ARM (`TCC_ARM_EABI`) `BOOTSTRAP` build. Three source bugs stop it —
+one at MesCC parse time, one at the hex2 link, and one in the ARM code tcc
+emits — and once all three are fixed the whole `tcc.c` translation unit
+compiles under MesCC to a working armv7l `tcc`. This repo demonstrates the
+three bugs **from source** in CI: the hex0 seed builds stage0-posix, that
+builds an armv7l `mes-m2`, and that runs MesCC over tcc's own source under
+`qemu-arm`. (The end-to-end job that builds a *self-hosting* `tcc-mes` from
+all three fixes is being finalized and will be added shortly — see the CI
+section below.)
 
-Both bugs are the *same class*: the fork added `#if !BOOTSTRAP` /
+Bugs 1 and 2 are the same class: the fork added `#if !BOOTSTRAP` /
 `#if BOOTSTRAP && __arm__` guards for the arm bootstrap path but the guards
 are inconsistent — one arm site was missed, and one use is not gated on the
-EABI variant its token table requires. Neither reproduces on x86 or riscv64
-(different backends), so the existing live-bootstrap routes never hit them.
+EABI variant its token table requires. Bug 3 is independent: a wrong ARM
+instruction encoding that real silicon tolerates but qemu (correctly)
+rejects. None of the three reproduces on x86 or riscv64 (different
+backends), so the existing live-bootstrap routes never hit them.
 
 ## Bug 1 — `arm-gen.c`: brace-assignment `avregs = {0}` (fails MesCC parse)
 
@@ -38,11 +43,10 @@ avregs = AVAIL_REGS_INITIALIZER;   /* -> avregs = {0};  under BOOTSTRAP */
 ```
 
 A brace list can initialise but not assign, so this is invalid C. MesCC's
-nyacc parser rejects it and the whole compile dies before emitting anything:
+nyacc parser rejects it at the brace and the compile fails:
 
 ```
-mescc: ...
-parse failed at state 367, on input {
+<stdin>: parse failed at state 367, on input "{"
 ```
 
 **Fix** (`fix1-arm-gen.patch`): gate the reassignment the same way the fork
@@ -100,6 +104,42 @@ supplies thin wrappers over the mes libc `memmove`/`memset` (note the ARM
 EABI `__aeabi_memset(dest, n, c)` argument order, which is exactly what tcc's
 `init_putz` already emits for arm).
 
+## Bug 3 — `arm-gen.c`: `CMP` written with a non-zero SBZ field (SIGILL on qemu)
+
+With bugs 1 and 2 fixed, MesCC produces a `tcc-mes` that links and whose
+`-version` runs — but anything `tcc-mes` compiles that contains a memory-reading
+loop (`while (s[i])` → `strlen`, `puts`, `printf`) faults with **SIGILL** under
+qemu. The cause is in `gen_opi`: the comparison operators fall through to the
+generic data-processing path, which allocates a scratch register and ORs it
+into instruction bits `[15:12]` — but for `CMP` (opcode `0x15`) those bits are
+**SBZ** (should-be-zero; `CMP` has no destination register). So `cmp r1, #0`
+is emitted as `0xe3511000` instead of `0xe3510000`:
+
+```
+stock  cmp r1, #0  = 0xe3511000   <-- scratch reg r1 leaked into SBZ [15:12]
+fix3   cmp r1, #0  = 0xe3510000   <-- SBZ = 0, correct
+```
+
+Both **disassemble identically** (`objdump` and qemu both print `cmp r1, #0`);
+only the bytes differ. Real ARM cores ignore the SBZ field, so the bad encoding
+runs fine on hardware — but a strict decoder such as qemu treats the encoding
+as UNPREDICTABLE and raises SIGILL. It only bites when the allocated scratch
+register isn't `r0`, i.e. any loop whose condition reads memory. This is **not**
+a qemu bug and **not** a MesCC artifact: verified on qemu-arm 7.2.22 and
+10.0.11 (both fault the bad encoding, both run the fixed one), and a gcc-built
+tcc from the same source emits the same `0xe3511000`, so the bug is in tcc's
+source.
+
+**Fix** (`fix3-arm-cmp.patch`): skip the `r<<12` OR when `opc == 0x15`:
+
+```c
+{ int is_cmp = (opc == 0x15);
+  ...
+  o(x|(is_cmp?0:(r<<12)));            /* const-operand path */
+  ...
+  o(opc|(is_cmp?0:(r<<12))|fr); }     /* reg-operand path   */
+```
+
 ## This repository
 
 `bootstrap.sh` builds everything from source, nothing vendored but the tiny
@@ -118,49 +158,44 @@ fix/support files here:
 `repro.sh <parse|token|fixed>` then extracts a fresh tcc tree, applies the
 fixes for that case, and asserts the outcome. The mes arm MesCC libc archives
 (needed to link `tcc.s`) are built on demand from mes's own
-`build-aux/configure-lib.sh` source lists.
+`build-aux/configure-lib.sh` source lists. `bug3.sh` is a standalone A/B for
+bug 3 that needs neither the bootstrap nor MesCC.
 
 CI (`.github/workflows/ci.yml`) runs three independent jobs on stock Ubuntu
-runners with `qemu-user-static`. Each rebuilds the toolchain and runs one
-MesCC compile of the full `tcc.c` — hours under `qemu-arm`, hence the long
-per-job timeout:
+runners. The first two rebuild the toolchain and run one MesCC compile of the
+full `tcc.c` — hours under `qemu-arm`, hence the long per-job timeout:
 
 - **bug1-parse** — stock tarball → MesCC `-S` fails with
-  `parse failed ... on input {`.
+  `parse failed at state 367, on input "{"`.
 - **bug2-token** — `fix1` only → `-S` succeeds, but the `tcc.s` link fails
   with `Target label TOK___memmove is not valid`.
-- **fixed** — `fix1` + `fix2` + `arm-aeabi-mem.c` → `tcc.s` links to a
-  working `tcc-mes`; `qemu-arm ./tcc-mes -version` prints `tcc version
-  0.9.26`, and `tcc-mes` then compiles `hello.c` to an armv7l ELF:
+- **bug3-cmp** — a fast, self-contained encoding A/B (no bootstrap, minutes
+  not hours): build two tcc oracles from the pinned tarball with host gcc
+  (stock and `+fix3`), have each compile the `while (s[i])` loop, show the
+  emitted `cmp` differs only in the SBZ nibble (`0xe3511000` vs `0xe3510000`),
+  link freestanding ARM ELFs, and run them — the stock encoding SIGILLs, the
+  fixed one runs. The job records the runner's `qemu-arm --version`; the
+  result does not depend on it.
 
-```console
-$ qemu-arm ./tcc-mes -version
-tcc version 0.9.26 (ARM Linux)
-$ qemu-arm ./tcc-mes -static -o hello hello.c
-$ file hello
-hello: ELF 32-bit LSB executable, ARM, EABI4 version 1 (SYSV), statically linked
-```
+bug1-parse and bug2-token demonstrate bugs 1 and 2 directly — each stops at
+the predicted failure. bug3-cmp isolates bug 3 to the single faulting
+instruction and shows the works-on-silicon / faults-on-qemu behavior with a
+gcc-built oracle, independent of MesCC, so fix 3's encoding change is verified
+on its own.
 
-That both fixes hold is proven directly: with them, MesCC compiles the whole
-`tcc.c` and links it into a `tcc-mes` that *runs* (its `-version` executes),
-and that `tcc-mes` in turn compiles and links C source into an armv7l ELF.
-
-**Runtime caveat (a separate, still-open bug).** *Running* a tcc-mes-compiled
-ELF that calls into the separately-linked libc currently faults under
-`qemu-arm` — the fault is a valid ARM instruction with the CPU in ARM state
-(not a Thumb/interworking problem), only on cross-object calls; intra-TU
-calls and `tcc-mes -version` are fine. This is a third bug in tcc's arm
-codegen, **present in the pristine tarball** (`arm-link.c` is unchanged) and
-independent of the two bugs here; it is the frontier of the separate
-"tcc-boot on arm" (milestone-3) work. The `fixed` job therefore runs the
-hello ELF and **reports** the outcome without failing on it; set
-`RUN_HELLO_MUST_PASS=1` to hard-assert it once that bug is fixed.
-
-The `fixed` job also applies two ABI-runtime prerequisites orthogonal to the
-two tcc bugs: `-D TCC_TARGET_ARM=1` when compiling `lib/libtcc1.c` (to skip
-its x86-only CPU block), and a no-prototype `main` declaration under
-`__TINYC__` in mes's `arm-mes-gcc/crt1.c` (its bare `main ()` call is
-otherwise rejected by tcc's strict argument check).
+A fourth, end-to-end job — `fix1` + `fix2` + `fix3` + `arm-aeabi-mem.c` →
+MesCC builds a `tcc-mes` that itself compiles a `hello.c` which **runs** under
+`qemu-arm` and self-hosts — is being finalized and will be added shortly (the
+`fix3` formulation is being reworked so the MesCC-built `tcc-mes` is trustworthy
+end-to-end, not merely able to print `-version`). That job also needs three
+ABI/runtime prerequisites orthogonal to the tcc bugs: `-D TCC_TARGET_ARM=1`
+when compiling `lib/libtcc1.c` (to skip its x86-only CPU block), and two fixes
+to mes's `arm-mes-gcc/crt1.c` — a no-prototype `main` declaration under
+`__TINYC__` (its bare `main ()` call is otherwise rejected by tcc's strict
+argument check), and moving the argc/argv/envp register reload to after
+`__init_io()` (a C call clobbers `r0-r3`, so the original order passed `main`
+garbage). Both crt1 points are upstreamable — the arm crt1 was never validated
+against a strict-arg-check tcc.
 
 Versions: tcc `0.9.26-1147-gee75a10c` (sha256
 `6b8cbd0a…b6e819f`); GNU Mes 0.27.1; nyacc 1.00.2; stage0-posix latest
