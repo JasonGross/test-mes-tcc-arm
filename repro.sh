@@ -136,9 +136,12 @@ case "$MODE" in
     echo "--> MesCC link exit $rc"
     tail -25 link.log
     [ "$rc" -ne 0 ] || die "tcc.s linked despite the undefined TOK___memmove"
-    grep -q "TOK___memmove is not valid" link.log \
-      || die "expected 'Target label TOK___memmove is not valid'"
-    echo "PASS: EABI build leaks TOK___memmove; hex2 rejects the label (bug 2)"
+    # Both TOK___memmove (struct copy) and TOK___memset (zero-init) leak under
+    # EABI; hex2 rejects whichever unresolved label it reaches first.
+    grep -qE "Target label TOK___(memmove|memset) is not valid" link.log \
+      || die "expected 'Target label TOK___memmove/TOK___memset is not valid'"
+    grep -oE "Target label TOK___(memmove|memset) is not valid" link.log | head -1
+    echo "PASS: EABI build leaks TOK___mem* token; hex2 rejects the label (bug 2)"
     ;;
 
   fixed)
