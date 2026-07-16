@@ -219,6 +219,14 @@ seven tcc patches plus one mes-side codegen fix — has since been shown to driv
 the *MesCC*-built arm tcc to a byte-identical self-host fixpoint as well. That
 fuller result is reported separately upstream.)
 
+> **Canonical fixpoint reference** (external to this CI, for the upstream
+> report — *not* proven by the four jobs here): the MesCC-built arm `tcc`
+> self-hosts from the hex0 seed to a byte-identical fixpoint at generation 2 —
+> `boot2` and `boot3` are identical, sha256
+> `6aa69584c76a6b23d4e515ac9f0f29dce857225bf1f0ee44f7b6e12ef9666f28`. The full
+> per-generation lineage and `SHA256SUMS` accompany that upstream report; those
+> bytes come from the main bootstrap driver, not from the jobs in this repo.
+
 The fixed job also needs three ABI/runtime prerequisites orthogonal to the tcc
 bugs: `-D TCC_TARGET_ARM=1` when compiling `lib/libtcc1.c` (to skip its
 x86-only CPU block), and two fixes to mes's `arm-mes-gcc/crt1.c` — a
