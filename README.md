@@ -23,6 +23,14 @@ instruction encoding that real silicon tolerates but qemu (correctly)
 rejects. None of the three reproduces on x86 or riscv64 (different
 backends), so the existing live-bootstrap routes never hit them.
 
+> **Not a completeness claim.** "Three bugs" is the set that blocks *this*
+> MesCC armv7l bootstrap to the point this repo demonstrates (a running
+> MesCC-built `tcc`), not an exhaustive audit. A fourth, assembler-layer bug
+> was found subsequently: tcc's `tccasm.c` emits the `.word` directive as 2
+> bytes (x86 width) rather than ARM's 4. It affects mainline tcc, not just this
+> fork, and is out of scope for the four jobs here; it is catalogued in the
+> broader upstream report.
+
 ## Bug 1 — `arm-gen.c`: brace-assignment `avregs = {0}` (fails MesCC parse)
 
 `AVAIL_REGS_INITIALIZER` is a compound literal for real compilers but a bare
