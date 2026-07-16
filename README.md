@@ -9,9 +9,11 @@ emits — and once all three are fixed the whole `tcc.c` translation unit
 compiles under MesCC to a working armv7l `tcc`. This repo demonstrates the
 three bugs **from source** in CI: the hex0 seed builds stage0-posix, that
 builds an armv7l `mes-m2`, and that runs MesCC over tcc's own source under
-`qemu-arm`. (The end-to-end job that builds a *self-hosting* `tcc-mes` from
-all three fixes is being finalized and will be added shortly — see the CI
-section below.)
+`qemu-arm`; a fourth job carries all three fixes through to a MesCC-built
+`tcc-mes` (0.9.26) that compiles, links, and **runs** a small program under
+`qemu-arm`. (That `tcc-mes` does not yet self-host, and code with calls of
+more than four arguments still miscompiles — both await a further MesCC fix,
+of tcc's >4-argument call stack cleanup, tracked upstream.)
 
 Bugs 1 and 2 are the same class: the fork added `#if !BOOTSTRAP` /
 `#if BOOTSTRAP && __arm__` guards for the arm bootstrap path but the guards
@@ -135,10 +137,19 @@ source.
 ```c
 { int is_cmp = (opc == 0x15);
   ...
-  o(x|(is_cmp?0:(r<<12)));            /* const-operand path */
+  if (is_cmp) o(x);      else o(x|(r<<12));         /* const-operand path */
   ...
-  o(opc|(is_cmp?0:(r<<12))|fr); }     /* reg-operand path   */
+  if (is_cmp) o(opc|fr); else o(opc|(r<<12)|fr); }  /* reg-operand path   */
 ```
+
+The `if/else` is deliberate, **not** `o(x|(is_cmp?0:(r<<12)))`. MesCC
+miscompiles a `cond?0:expr` ternary used as a non-final term of a `|`-chain
+that is passed as a call argument — it drops the other terms, so the ternary
+form emits a `0x00000000` word for *every* data-processing op (adds included),
+producing a `tcc-mes` that miscompiles integer addition. gcc compiles the
+ternary fine, which is why an oracle A/B (bug3-cmp) does not catch it; the
+`if/else` form is correct under both. We will report that MesCC bug separately
+with reproducers.
 
 ## This repository
 
@@ -161,9 +172,10 @@ fixes for that case, and asserts the outcome. The mes arm MesCC libc archives
 `build-aux/configure-lib.sh` source lists. `bug3.sh` is a standalone A/B for
 bug 3 that needs neither the bootstrap nor MesCC.
 
-CI (`.github/workflows/ci.yml`) runs three independent jobs on stock Ubuntu
-runners. The first two rebuild the toolchain and run one MesCC compile of the
-full `tcc.c` — hours under `qemu-arm`, hence the long per-job timeout:
+CI (`.github/workflows/ci.yml`) runs four independent jobs on stock Ubuntu
+runners. Three of them (bug1-parse, bug2-token, fixed) rebuild the toolchain
+from the seed and run MesCC over the full `tcc.c` — hours under `qemu-arm`,
+hence the long per-job timeout; bug3-cmp is a fast host-gcc A/B:
 
 - **bug1-parse** — stock tarball → MesCC `-S` fails with
   `parse failed at state 367, on input "{"`.
@@ -176,26 +188,45 @@ full `tcc.c` — hours under `qemu-arm`, hence the long per-job timeout:
   link freestanding ARM ELFs, and run them — the stock encoding SIGILLs, the
   fixed one runs. The job records the runner's `qemu-arm --version`; the
   result does not depend on it.
+- **fixed** — `fix1` + `fix2` + `fix3` + `arm-aeabi-mem.c` → MesCC builds a
+  `tcc-mes`, which reports `tcc version 0.9.26 (ARM Linux)` and then compiles
+  and links `hello.c`; the resulting ARM ELF **runs** under `qemu-arm`. The
+  hello is chosen to be spurious-pass-proof: it returns
+  `sum_to(10) + slen("hello from tcc-armv7l") = 55 + 21 = 76` as its exit
+  code, so its summation loop exercises the integer-add path (a `fix3`
+  ternary miscompile, see below, would zero the loop counter and hang rather
+  than exit with a plausible-but-wrong value) and its `while (s[n])` loop
+  exercises the `CMP`/SBZ path bug 3 breaks. Every call in it takes ≤4
+  arguments.
 
 bug1-parse and bug2-token demonstrate bugs 1 and 2 directly — each stops at
 the predicted failure. bug3-cmp isolates bug 3 to the single faulting
 instruction and shows the works-on-silicon / faults-on-qemu behavior with a
 gcc-built oracle, independent of MesCC, so fix 3's encoding change is verified
-on its own.
+on its own. **fixed** carries all three fixes through to a `tcc-mes` that
+compiles and runs real code.
 
-A fourth, end-to-end job — `fix1` + `fix2` + `fix3` + `arm-aeabi-mem.c` →
-MesCC builds a `tcc-mes` that itself compiles a `hello.c` which **runs** under
-`qemu-arm` and self-hosts — is being finalized and will be added shortly (the
-`fix3` formulation is being reworked so the MesCC-built `tcc-mes` is trustworthy
-end-to-end, not merely able to print `-version`). That job also needs three
-ABI/runtime prerequisites orthogonal to the tcc bugs: `-D TCC_TARGET_ARM=1`
-when compiling `lib/libtcc1.c` (to skip its x86-only CPU block), and two fixes
-to mes's `arm-mes-gcc/crt1.c` — a no-prototype `main` declaration under
-`__TINYC__` (its bare `main ()` call is otherwise rejected by tcc's strict
-argument check), and moving the argc/argv/envp register reload to after
-`__init_io()` (a C call clobbers `r0-r3`, so the original order passed `main`
-garbage). Both crt1 points are upstreamable — the arm crt1 was never validated
-against a strict-arg-check tcc.
+**Claim boundary.** This repository's CI proves the three bugs and a
+*three-patch* fixed build: with fix1+fix2+fix3 the MesCC-built `tcc-mes`
+compiles, links, and runs the hello. At that three-patch scope it does **not**
+self-host, and code containing a call with more than four arguments still
+miscompiles — both are downstream of further tcc-codegen / MesCC bugs addressed
+by additional patches that these jobs do not exercise. The hello therefore
+keeps every call to ≤4 arguments, and no self-host claim is made by the CI
+here. (For completeness, and *not* demonstrated by the jobs in this repo: a
+gcc-built tcc of the same patched source self-hosts, and the full series —
+seven tcc patches plus one mes-side codegen fix — has since been shown to drive
+the *MesCC*-built arm tcc to a byte-identical self-host fixpoint as well. That
+fuller result is reported separately upstream.)
+
+The fixed job also needs three ABI/runtime prerequisites orthogonal to the tcc
+bugs: `-D TCC_TARGET_ARM=1` when compiling `lib/libtcc1.c` (to skip its
+x86-only CPU block), and two fixes to mes's `arm-mes-gcc/crt1.c` — a
+no-prototype `main` declaration under `__TINYC__` (its bare `main ()` call is
+otherwise rejected by tcc's strict argument check), and moving the argc/argv/envp
+register reload to after `__init_io()` (a C call clobbers `r0-r3`, so the
+original order passed `main` garbage). Both crt1 points are upstreamable — the
+arm crt1 was never validated against a strict-arg-check tcc.
 
 Versions: tcc `0.9.26-1147-gee75a10c` (sha256
 `6b8cbd0a…b6e819f`); GNU Mes 0.27.1; nyacc 1.00.2; stage0-posix latest

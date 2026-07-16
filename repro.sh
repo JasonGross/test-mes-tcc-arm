@@ -247,19 +247,23 @@ PY
     file "$out"
     case "$(file "$out")" in *"ELF 32-bit"*ARM*) : ;; *) die "hello is not an armv7l ELF" ;; esac
 
-    # Run it. This is the hard proof that fix3 (CMP-SBZ) is correct: hello's
-    # printf path runs `while (s[i])` loops in the tcc-compiled libc, whose
-    # `cmp rN,#0` -- without fix3 -- carries a non-zero SBZ field (0xe3511000)
-    # that qemu faults as SIGILL. With all three fixes the ELF runs and prints.
-    msg "run the tcc-mes-compiled hello under qemu-arm (must print + exit 0)"
+    # Run it. This is the hard proof that fix3 (CMP-SBZ) AND the integer-add
+    # codegen are both correct: hello's puts()/slen() run `while (s[i])` loops
+    # in the tcc-compiled libc, whose `cmp rN,#0` -- without fix3 -- carries a
+    # non-zero SBZ field (0xe3511000) that qemu faults as SIGILL; and sum_to()
+    # adds in a loop. The exit code encodes 55+21 = 76, so an add miscompile
+    # (which zeroes the loop counters) hangs or mis-exits rather than passing
+    # spuriously. Every call in hello.c is <=4 args -- a separate MesCC
+    # >4-arg call-cleanup miscompile (tracked upstream) is out of scope here.
+    msg "run the tcc-mes-compiled hello under qemu-arm (must print + exit 76)"
     set +e
     got=$(run_arm "$out" 2>&1); rc=$?
     set -e
     echo "hello output: [$got] (exit $rc)"
-    [ "$rc" -eq 0 ] || die "hello did not exit 0 (exit $rc) -- see fix3/CMP-SBZ"
+    [ "$rc" -eq 76 ] || die "hello did not exit 76 (= 55+21; add/CMP miscompile?) -- exit $rc"
     [ "$got" = "hello from tcc-armv7l" ] || die "hello printed the wrong text: [$got]"
     echo "PASS: fix1+fix2+fix3 -> MesCC builds a working tcc-mes (version 0.9.26)"
-    echo "      that compiles+links tcc.c AND compiles a hello.c that runs under"
-    echo "      qemu-arm and prints correctly."
+    echo "      that compiles+links a hello which exercises CMP + integer add"
+    echo "      and runs under qemu-arm (exit 76, correct output)."
     ;;
 esac

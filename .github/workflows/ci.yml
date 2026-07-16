@@ -4,14 +4,16 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Three independent jobs (fail-fast: false). Two rebuild the shared
+# Four independent jobs (fail-fast: false). Three rebuild the shared
 # from-source toolchain (bootstrap.sh) and run a MesCC compile of the whole
 # tcc.c translation unit under qemu-arm -- a multi-hour job on a GitHub
 # runner, hence the long timeout. bug1-parse fails in the parser and is the
-# quickest; bug2-token carries a full ~TU compile up to the hex2 link.
-# bug3-cmp is a fast, self-contained encoding A/B that needs no bootstrap at
-# all. (A fourth end-to-end "fixed" job -- MesCC builds a self-hosting
-# tcc-mes -- is being finalized and will be added; see README.)
+# quickest; bug2-token carries a full ~TU compile up to the hex2 link; fixed
+# carries all three fixes through to a tcc-mes that compiles+runs a hello
+# (exit 76 = 55+21, spurious-pass-proof -- see README). bug3-cmp is a fast,
+# self-contained encoding A/B that needs no bootstrap at all. The fixed job
+# does not claim self-hosting or >4-arg calls (a further MesCC fix, tracked
+# upstream); see the README claim boundary.
 jobs:
   repro:
     strategy:
@@ -20,6 +22,7 @@ jobs:
         include:
           - { mode: parse, name: "bug1-parse  (arm-gen.c avregs = {0})" }
           - { mode: token, name: "bug2-token  (TOK___memmove under EABI)" }
+          - { mode: fixed, name: "fixed       (fix1+2+3 -> tcc-mes runs hello, exit 76)" }
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 350

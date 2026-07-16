@@ -1,6 +1,6 @@
 --- a/arm-gen.c
 +++ b/arm-gen.c
-@@ -1634,19 +1634,26 @@
+@@ -1634,19 +1634,30 @@
        vswap();
        c=intr(gv(RC_INT));
        vswap();
@@ -17,14 +17,18 @@
  	if(x) {
  	  r=intr(vtop[-1].r=get_reg_ex(RC_INT,regmask(vtop[-1].r)));
 -	  o(x|(r<<12));
-+	  o(x|(is_cmp?0:(r<<12)));
++	  /* NB: if/else, not `o(x|(is_cmp?0:(r<<12)))`: MesCC miscompiles a
++	     `cond?0:expr` ternary used as a non-final term of a |-chain passed
++	     as a call argument (it drops the other terms), so the ternary form
++	     emits a 0x00000000 word for every add. gcc handles it fine. */
++	  if (is_cmp) o(x); else o(x|(r<<12));
  	  goto done;
  	}
        }
        fr=intr(gv(RC_INT));
        r=intr(vtop[-1].r=get_reg_ex(RC_INT,two2mask(vtop->r,vtop[-1].r)));
 -      o(opc|(r<<12)|fr);
-+      o(opc|(is_cmp?0:(r<<12))|fr);
++      if (is_cmp) o(opc|fr); else o(opc|(r<<12)|fr);
 +      }
  done:
        vtop--;
