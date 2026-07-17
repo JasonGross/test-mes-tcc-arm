@@ -28,8 +28,9 @@ backends), so the existing live-bootstrap routes never hit them.
 > MesCC-built `tcc`), not an exhaustive audit. A fourth, assembler-layer bug
 > was found subsequently: tcc's `tccasm.c` emits the `.word` directive as 2
 > bytes (x86 width) rather than ARM's 4. It affects mainline tcc, not just this
-> fork, and is out of scope for the four jobs here; it is catalogued in the
-> broader upstream report.
+> fork. The `word-directive` job here demonstrates it statically (a host-gcc
+> oracle A/B on the emitted `.text`, no bootstrap and no emulation); it is also
+> catalogued in the broader upstream report.
 
 ## Bug 1 — `arm-gen.c`: brace-assignment `avregs = {0}` (fails MesCC parse)
 
@@ -180,10 +181,11 @@ fixes for that case, and asserts the outcome. The mes arm MesCC libc archives
 `build-aux/configure-lib.sh` source lists. `bug3.sh` is a standalone A/B for
 bug 3 that needs neither the bootstrap nor MesCC.
 
-CI (`.github/workflows/ci.yml`) runs four independent jobs on stock Ubuntu
+CI (`.github/workflows/ci.yml`) runs five independent jobs on stock Ubuntu
 runners. Three of them (bug1-parse, bug2-token, fixed) rebuild the toolchain
 from the seed and run MesCC over the full `tcc.c` — hours under `qemu-arm`,
-hence the long per-job timeout; bug3-cmp is a fast host-gcc A/B:
+hence the long per-job timeout; bug3-cmp and word-directive are fast host-gcc
+A/Bs (minutes, no bootstrap):
 
 - **bug1-parse** — stock tarball → MesCC `-S` fails with
   `parse failed at state 367, on input "{"`.
@@ -206,6 +208,14 @@ hence the long per-job timeout; bug3-cmp is a fast host-gcc A/B:
   than exit with a plausible-but-wrong value) and its `while (s[n])` loop
   exercises the `CMP`/SBZ path bug 3 breaks. Every call in it takes ≤4
   arguments.
+- **word-directive** — a fast, static A/B (no bootstrap, no emulation) for the
+  assembler-layer `.word` width bug noted in the completeness caveat above:
+  build two tcc oracles from the pinned tarball with host gcc (stock and
+  `+fix9`), assemble `__asm__(".word 0xe7f000f0")` with each, and read the
+  emitted `.text` straight back with `objcopy` — the stock oracle truncates the
+  32-bit datum to 2 bytes (`f000`), `fix9` emits the full 4 (`f000f0e7`). It
+  only reads the bytes tcc wrote; it never runs or links them, so it isolates
+  the directive width from any codegen or emulation behaviour.
 
 bug1-parse and bug2-token demonstrate bugs 1 and 2 directly — each stops at
 the predicted failure. bug3-cmp isolates bug 3 to the single faulting

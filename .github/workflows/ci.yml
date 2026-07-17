@@ -4,16 +4,22 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Four independent jobs (fail-fast: false). Three rebuild the shared
-# from-source toolchain (bootstrap.sh) and run a MesCC compile of the whole
-# tcc.c translation unit under qemu-arm -- a multi-hour job on a GitHub
-# runner, hence the long timeout. bug1-parse fails in the parser and is the
-# quickest; bug2-token carries a full ~TU compile up to the hex2 link; fixed
-# carries all three fixes through to a tcc-mes that compiles+runs a hello
-# (exit 76 = 55+21, spurious-pass-proof -- see README). bug3-cmp is a fast,
-# self-contained encoding A/B that needs no bootstrap at all. The fixed job
-# does not claim self-hosting or >4-arg calls (a further MesCC fix, tracked
-# upstream); see the README claim boundary.
+# Cancel superseded runs of the same ref (each push retriggers multi-hour jobs).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Jobs (fail-fast: false). Three rebuild the shared from-source toolchain
+# (bootstrap.sh) and run a MesCC compile of the whole tcc.c translation unit
+# under qemu-arm -- a multi-hour job on a GitHub runner, hence the long
+# timeout. bug1-parse fails in the parser and is the quickest; bug2-token
+# carries a full ~TU compile up to the hex2 link; fixed carries fix1+2+3
+# through to a tcc-mes that compiles+runs a hello (exit 76 = 55+21,
+# spurious-pass-proof -- see README). bug3-cmp and word-directive are fast,
+# self-contained encoding/width A/Bs that need no bootstrap at all. The full
+# mes/0001 + tinycc 0001-0010 self-host fixpoint (boot2==boot3) is exercised
+# by a separate, path-isolated workflow (fixpoint.yml) so its multi-hour run
+# does not re-trigger this bug-demo matrix on every push.
 jobs:
   repro:
     strategy:
@@ -47,3 +53,16 @@ jobs:
           sudo apt-get install -y -q qemu-user-static gcc-arm-linux-gnueabihf
       - name: "A/B the CMP-SBZ encoding (stock 0xe3511000 SIGILL vs fix3 0xe3510000 runs)"
         run: ./bug3.sh
+
+  word-directive:
+    name: "word-directive (.word is 32-bit on ARM; tcc patch 0009)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install arm cross tools (host-gcc oracles + objcopy .text readback)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gcc-arm-linux-gnueabihf
+      - name: "A/B the .word width (stock truncates to 2 bytes vs fix9 emits 4)"
+        run: ./word.sh
