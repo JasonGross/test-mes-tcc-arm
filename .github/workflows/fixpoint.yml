@@ -1,0 +1,43 @@
+name: self-host fixpoint
+
+# The full-series (mes/0001 + tinycc 0001-0010) from-seed self-host fixpoint,
+# in its OWN workflow so its multi-hour run is decoupled from the bug-demo
+# matrix in ci.yml: iterating fixpoint.sh here does not re-trigger those jobs,
+# and ci.yml's paths-ignore skips this file in turn. Triggered only by changes
+# to the fixpoint machinery (or manually via the Actions tab).
+on:
+  push:
+    paths:
+      - 'fixpoint.sh'
+      - 'patches/**'
+      - 'bootstrap.sh'
+      - 'arm-aeabi-mem.c'
+      - 'hello.c'
+      - '.github/workflows/fixpoint.yml'
+  workflow_dispatch:
+
+# A new push cancels a superseded fixpoint run of the same ref. Distinct group
+# from ci.yml (github.workflow differs), so this never cancels a bug-demo run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixpoint:
+    name: "fixpoint (mes/0001 + tinycc 0001-0010 -> boot2==boot3 self-host)"
+    runs-on: ubuntu-latest
+    # Nominal ~3.5-4h on a GitHub runner; 350 keeps an explicit ceiling ~10 min
+    # under GitHub's hard 6h job cap, so a wedged run trips this timeout with a
+    # clean signal rather than the runner's abrupt kill. fixpoint.sh emits a
+    # heartbeat line every 5 min so a slow run is distinguishable from a stuck one.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install qemu-user + arm binutils (AArch32 exec + VFP-gate objdump)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-user-static binutils-arm-linux-gnueabihf
+      - name: Bootstrap (stage0 hex0 seed -> armv7l mes-m2 -> nyacc -> fetch tcc)
+        run: ./bootstrap.sh
+      - name: "Self-host fixpoint (mes/0001 + tinycc 0001-0010, boot0->boot3)"
+        run: ./fixpoint.sh

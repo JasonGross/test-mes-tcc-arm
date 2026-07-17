@@ -1,6 +1,14 @@
 name: mes tcc arm bugs
 on:
   push:
+    # The full self-host fixpoint lives in fixpoint.yml; iterating it (or the
+    # patch series / docs it consumes) must not re-trigger this multi-hour
+    # bug-demo matrix. Those paths are exercised by fixpoint.yml instead.
+    paths-ignore:
+      - 'fixpoint.sh'
+      - 'patches/**'
+      - '.github/workflows/fixpoint.yml'
+      - '**.md'
   pull_request:
   workflow_dispatch:
 

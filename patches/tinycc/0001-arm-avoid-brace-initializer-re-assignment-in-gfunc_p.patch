@@ -1,0 +1,51 @@
+From 270cfac42f41cee6880d1ee00aa29e6b8c7666b4 Mon Sep 17 00:00:00 2001
+From: Jason Gross <jason@theorem.dev>
+Date: Wed, 15 Jul 2026 19:48:04 +0000
+Subject: [PATCH 1/3] arm: avoid brace-initializer re-assignment in
+ gfunc_prolog under BOOTSTRAP
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Under -D BOOTSTRAP=1, AVAIL_REGS_INITIALIZER expands to {0}, so the
+bare re-assignment `avregs = AVAIL_REGS_INITIALIZER;` becomes
+`avregs = {0};` — invalid C (a brace initializer is only legal in a
+declaration). GCC accepts it, but MesCC's nyacc parser rejects it:
+
+    parse failed at state 367, on input {
+
+making tcc.c uncompilable by MesCC whenever TCC_TARGET_ARM and
+TCC_ARM_EABI are set. The analogous compound-literal declarations in
+assign_regs are already #if !BOOTSTRAP-guarded; this lone use-site was
+missed. Use a temporary declaration under BOOTSTRAP instead.
+
+Verified: with this (and the following TOK___memmove fix), MesCC
+running on an armv7l mes-m2 compiles the full tcc.c (TCC_TARGET_ARM=1
+TCC_ARM_EABI=1 TCC_ARM_VFP=1 BOOTSTRAP=1 ONE_SOURCE=1) and the
+resulting tcc runs on AArch32.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0135X6tRviSFCswBbHXxQofc
+---
+ arm-gen.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/arm-gen.c b/arm-gen.c
+index 42a334c9..eaddad31 100644
+--- a/arm-gen.c
++++ b/arm-gen.c
+@@ -1368,7 +1368,11 @@ void gfunc_prolog(CType *func_type)
+ #ifdef TCC_ARM_EABI
+   if (float_abi == ARM_HARD_FLOAT) {
+     func_vc += nf * 4;
++#if !BOOTSTRAP
+     avregs = AVAIL_REGS_INITIALIZER;
++#else
++    { struct avail_regs _tmp = AVAIL_REGS_INITIALIZER; avregs = _tmp; }
++#endif
+   }
+ #endif
+   pn = struct_ret, sn = 0;
+-- 
+2.39.5
+

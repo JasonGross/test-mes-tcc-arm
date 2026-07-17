@@ -1,0 +1,78 @@
+From f6afa5c304f2681ed30e9c3197a24e2fb5d2e2a4 Mon Sep 17 00:00:00 2001
+From: Jason Gross <jason@theorem.dev>
+Date: Thu, 16 Jul 2026 02:16:09 +0000
+Subject: [PATCH 3/3] arm: do not set the SBZ bits 15-12 when emitting CMP in
+ gen_opi
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The comparison operators fall through gen_opi's generic
+data-processing path, which allocates a scratch register r and ORs
+r<<12 into the instruction — but for CMP (opc 0x15) bits 15-12 are
+SBZ. `cmp r1, #0` was emitted as 0xe3511000 instead of 0xe3510000.
+
+Real ARM cores ignore the SBZ field, so this goes unnoticed on
+hardware; a strict decoder such as qemu treats the encoding as
+UNPREDICTABLE and raises SIGILL (verified on qemu-arm 7.2, 8.2 and
+10.0). It only manifests when the scratch register is not r0, e.g.
+any `while (s[i])`-style loop whose condition reads memory — so
+strlen, puts, printf all die under qemu. A gcc-built tcc from the
+same source emits the same bad encoding, confirming a source bug.
+
+The fix deliberately uses if/else rather than a `is_cmp?0:(r<<12)`
+ternary inside the o(...) argument: MesCC (which this fork exists to
+be compiled by) miscompiles a `cond?0:expr` ternary appearing as a
+non-final term of an OR-chain in a call argument — the same
+limitation the existing #if !BOOTSTRAP guards elsewhere in this file
+work around.
+
+With this fix tcc-compiled test programs run correctly under qemu,
+and tcc self-hosts (verified with a gcc-built tcc of this source).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0135X6tRviSFCswBbHXxQofc
+---
+ arm-gen.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/arm-gen.c b/arm-gen.c
+index eaddad31..1328ea3a 100644
+--- a/arm-gen.c
++++ b/arm-gen.c
+@@ -1638,19 +1638,30 @@ void gen_opi(int op)
+       vswap();
+       c=intr(gv(RC_INT));
+       vswap();
++      /* opc==0x15 is CMP (the comparison ops fall through the `default` case
++	 above). CMP has no destination: bits 15-12 are SBZ. The generic path
++	 below allocates a scratch reg `r` and ORs it into that field; real ARM
++	 ignores those bits, but a strict decoder (qemu) faults on the resulting
++	 UNPREDICTABLE encoding. Only ORs r<<12 when there is a real result. */
++      { int is_cmp = (opc == 0x15);
+       opc=0xE0000000|(opc<<20)|(c<<16);
+       if((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST) {
+ 	uint32_t x;
+ 	x=stuff_const(opc|0x2000000,vtop->c.i);
+ 	if(x) {
+ 	  r=intr(vtop[-1].r=get_reg_ex(RC_INT,regmask(vtop[-1].r)));
+-	  o(x|(r<<12));
++	  /* NB: if/else, not `o(x|(is_cmp?0:(r<<12)))`: MesCC miscompiles a
++	     `cond?0:expr` ternary used as a non-final term of a |-chain passed
++	     as a call argument (it drops the other terms), so the ternary form
++	     emits a 0x00000000 word for every add. gcc handles it fine. */
++	  if (is_cmp) o(x); else o(x|(r<<12));
+ 	  goto done;
+ 	}
+       }
+       fr=intr(gv(RC_INT));
+       r=intr(vtop[-1].r=get_reg_ex(RC_INT,two2mask(vtop->r,vtop[-1].r)));
+-      o(opc|(r<<12)|fr);
++      if (is_cmp) o(opc|fr); else o(opc|(r<<12)|fr);
++      }
+ done:
+       vtop--;
+       if (op >= TOK_ULT && op <= TOK_GT) {
+-- 
+2.39.5
+

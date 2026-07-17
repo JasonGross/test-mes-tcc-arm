@@ -1,0 +1,112 @@
+From f3d0e7f77c192e9a205f5af53d1f7b23c3ffaed7 Mon Sep 17 00:00:00 2001
+From: Jason Gross <jason@theorem.dev>
+Date: Thu, 16 Jul 2026 09:30:00 +0000
+Subject: [PATCH] arm: pass the VFP T2CPR bit as a local, not inline in the
+ opcode OR-chain
+
+The fifth MesCC miscompile of this bring-up and the last self-host blocker on
+arm; the ternary-in-OR-chain family (with patch 3's CMP fix), distinct from the
+assign_regs family.
+
+arm-gen.c builds each VFP instruction word by OR-ing the "double precision" bit
+T2CPR(t) into an opcode base, at five sites (fcpyX, gen_opf, fYitoX, ftoXizY,
+ftof), e.g. `o(0xEEB80A40 | r2 | T2CPR(t))`. MesCC miscompiles a |-chain whose
+NON-FIRST term is an inline conditional: it drops the terms BEFORE the
+conditional and keeps only its value. So a MesCC-built tcc emits the bare bit
+0x00000100 where the VFP opcode should be; that decodes as a conditional
+`andeq`/`vstr`-adjacent word that corrupts a pointer, and tcc-boot0 SIGSEGVs at
+the first int->double cast while compiling the libc (after cleanly compiling all
+of tcc.c and printing -version). A gcc-built tcc of the same source is correct,
+so this is a MesCC bug, not a tcc source bug.
+
+Two non-fixes, both verified still-broken by compiling and RUNNING the exact
+shapes under the arm mes-m2 that builds tcc:
+  - the fork's own BOOTSTRAP idiom of assigning the whole chain to a temp
+    (`int x = BASE | reg | T2CPR(t)`) -- the conditional is still inline;
+  - rewriting T2CPR arithmetically as `(cond) << 8` -- MesCC drops the other
+    terms of a shift-of-relational just the same.
+The shape MesCC does compile correctly is to lift the conditional into its OWN
+local and OR the plain variable: `int cpr = T2CPR(t); o(BASE | reg | cpr);`
+(equivalently an if/else, as patch 3 uses for CMP). Verified correct for the
+3-, 4- and 5-term sites. So keep T2CPR as upstream's ternary and rewrite the
+five use-sites. A gcc build is unaffected (semantic no-op). We will report the
+underlying MesCC bug upstream with the others.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0135X6tRviSFCswBbHXxQofc
+---
+ arm-gen.c | 23 ++++++++++++++++++-----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/arm-gen.c b/arm-gen.c
+index 416c2b8..d07ab9a 100644
+--- a/arm-gen.c
++++ b/arm-gen.c
+@@ -84,6 +84,14 @@ enum {
+ };
+ 
+ #ifdef TCC_ARM_VFP
++/* T2CPR(t) = the VFP double-precision opcode bit. Kept as upstream's ternary,
++   but it MUST NOT be OR'd inline into an opcode word: MesCC miscompiles a
++   |-chain whose non-first term is an inline conditional (ternary, or a shift of
++   a relational), dropping the terms BEFORE it -- so `o(BASE|reg|T2CPR(t))` emits
++   the bare 0x100 and tcc-boot0 faults at the first int->double cast. The five
++   sites below compute `int cpr = T2CPR(...)` into a local first, then OR the
++   plain cpr. (Assigning the whole chain to a temp does NOT help; the fix is a
++   temp for the conditional ALONE. Same family as the gen_opi CMP if/else fix.) */
+ #define T2CPR(t) (((t) & VT_BTYPE) != VT_FLOAT ? 0x100 : 0)
+ #endif
+ 
+@@ -640,7 +648,8 @@ void load(int r, SValue *sv)
+         o(0xEEB00A40|(vfpr(r)<<12)|vfpr(v)|T2CPR(ft)); /* fcpyX */
+ #else
+       {
+-        int t = 0xEEB00A40|(vfpr(r)<<12)|vfpr(v)|T2CPR(ft);
++        int cpr = T2CPR(ft); /* own local: MesCC drops |-chain terms before an inline conditional; see T2CPR */
++        int t = 0xEEB00A40|(vfpr(r)<<12)|vfpr(v)|cpr;
+         o(t); /* fcpyX */
+       }
+ #endif
+@@ -1759,7 +1768,8 @@ void gen_opf(int op)
+ {
+   uint32_t x;
+   int fneg=0,r;
+-  x=0xEE000A00|T2CPR(vtop->type.t);
++  { int cpr = T2CPR(vtop->type.t); /* own local: MesCC drops |-chain terms before an inline conditional; see T2CPR */
++    x=0xEE000A00|cpr; }
+   switch(op) {
+     case '+':
+       if(is_zero(-1))
+@@ -2071,7 +2081,8 @@ ST_FUNC void gen_cvt_itof1(int t)
+ #if !BOOTSTRAP
+     o(0xEEB80A40|r2|T2CPR(t)); /* fYitoX*/
+ #else
+-    int x = 0xEEB80A40|r2|T2CPR(t);
++    int cpr = T2CPR(t); /* own local: MesCC drops |-chain terms before an inline conditional; see T2CPR */
++    int x = 0xEEB80A40|r2|cpr;
+     o(x); /* fYitoX*/
+ #endif
+ #else
+@@ -2152,7 +2163,8 @@ void gen_cvt_ftoi(int t)
+ #if !BOOTSTRAP
+     o(0xEEBC0AC0|(r<<12)|r|T2CPR(r2)|u); /* ftoXizY */
+ #else
+-    int x =0xEEBC0AC0|(r<<12)|r|T2CPR(r2)|u;
++    int cpr = T2CPR(r2); /* own local: MesCC drops |-chain terms before an inline conditional; see T2CPR */
++    int x =0xEEBC0AC0|(r<<12)|r|cpr|u;
+     o(x); /* ftoXizY */
+ #endif
+     r2=intr(vtop->r=get_reg(RC_INT));
+@@ -2211,7 +2223,8 @@ void gen_cvt_ftof(int t)
+ #if !BOOTSTRAP
+     o(0xEEB70AC0|(r<<12)|r|T2CPR(vtop->type.t));
+ #else
+-    int x = 0xEEB70AC0|(r<<12)|r|T2CPR(vtop->type.t);
++    int cpr = T2CPR(vtop->type.t); /* own local: MesCC drops |-chain terms before an inline conditional; see T2CPR */
++    int x = 0xEEB70AC0|(r<<12)|r|cpr;
+     o(x);
+ #endif
+   }
+-- 
+2.39.5
+

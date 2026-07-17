@@ -1,0 +1,38 @@
+From: Jason Gross <jason@theorem.dev>
+Subject: [PATCH] mescc: copy multi-word aggregate local-init by value, not by address
+
+init-local's plain-expression case stored a single register to the local.
+For a struct wider than a register, init->r leaves the SOURCE ADDRESS in the
+register (mem->r does not load an aggregate), so only the address was kept
+and MesCC printed 'unexpected size:8'. Copy the whole value like 'a = b'.
+---
+--- a/module/mescc/compile.scm	2025-07-26 09:19:36.000000000 +0000
++++ b/module/mescc/compile.scm	2026-07-16 15:34:39.458247998 +0000
+@@ -2279,8 +2279,25 @@
+ 
+     (() info)
+     (_ (let* ((info (init->r o info))
+-              (info (append-text info (r->local+n-text info local n))))
+-         (free-register info)))))
++              (type (local:type local))
++              (reg-size (->size "*" info))
++              (size (->size type info)))
++         ;; A multi-word aggregate initialised from an expression: init->r
++         ;; leaves the SOURCE ADDRESS in the register (mem->r does not load a
++         ;; struct wider than a register), so a single-word r->local+n store
++         ;; would keep only the address.  Copy the whole value instead, the same
++         ;; way a struct `a = b` assignment does (expr->register* dest, then
++         ;; r0->r1-mem*n).
++         (if (and (structured-type? local) (> size reg-size))
++             (let* ((info (allocate-register info))
++                    (info (append-text info (wrap-as (as info 'local-ptr->r (local:id local)))))
++                    (info (if (zero? n) info
++                              (append-text info (wrap-as (as info 'r+value n)))))
++                    (info (r0->r1-mem*n info size size))
++                    (info (free-register info)))
++               (free-register info))
++             (let ((info (append-text info (r->local+n-text info local n))))
++               (free-register info)))))))
+ 
+ (define (local->info type name o init info)
+   (let* ((locals (.locals info))

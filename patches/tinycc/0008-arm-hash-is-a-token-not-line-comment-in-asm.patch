@@ -1,0 +1,47 @@
+From 5ad5aa4e7a3f799ee9175118da69a598366fde3a Mon Sep 17 00:00:00 2001
+From: Jason Gross <jason@theorem.dev>
+Date: Thu, 16 Jul 2026 22:50:00 +0000
+Subject: [PATCH 08/10] arm: tokenize '#' as itself (not a line comment) in
+ assembler input
+
+On ARM, '#' introduces an immediate operand in the assembler syntax
+(`mov r0, #0`, `moveq r0, #1`, `svc #0`). tcc's preprocessor, when a '#'
+is not the start of '##', treats it as the beginning of a line comment
+whenever it is tokenizing assembler input (PARSE_FLAG_ASM_FILE) -- the
+correct behaviour for the x86 / x86-64 GNU as dialect, where '#' is the
+comment character, but wrong for ARM, where it would swallow the rest of
+every immediate-bearing line.
+
+Guard the line-comment branch out for TCC_TARGET_ARM so '#' becomes a
+real token there. This is required to assemble musl-1.1.24's
+arch/arm/*.S (e.g. the bootstrap setjmp.S / longjmp.S) with the bounded
+ARM assembler added by a later patch. No effect on non-ARM targets.
+---
+ tccpp.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/tccpp.c b/tccpp.c
+index 4fb0d4a..dc3343a 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -2586,12 +2586,15 @@ maybe_newline:
+                 p++;
+                 tok = TOK_TWOSHARPS;
+             } else {
++#if !defined(TCC_TARGET_ARM)
+                 if (parse_flags & PARSE_FLAG_ASM_FILE) {
+                     p = parse_line_comment(p - 1);
+                     goto redo_no_start;
+-                } else {
++                } else
++#endif
++                    /* ARM assembly uses '#' for immediate constants, so it
++                       must be a real token there, not a line comment. */
+                     tok = '#';
+-                }
+             }
+         }
+         break;
+-- 
+2.39.5
+

@@ -230,20 +230,36 @@ compiles, links, and runs the hello. At that three-patch scope it does **not**
 self-host, and code containing a call with more than four arguments still
 miscompiles — both are downstream of further tcc-codegen / MesCC bugs addressed
 by additional patches that these jobs do not exercise. The hello therefore
-keeps every call to ≤4 arguments, and no self-host claim is made by the CI
-here. (For completeness, and *not* demonstrated by the jobs in this repo: a
-gcc-built tcc of the same patched source self-hosts, and the full series —
-seven tcc patches plus one mes-side codegen fix — has since been shown to drive
-the *MesCC*-built arm tcc to a byte-identical self-host fixpoint as well. That
-fuller result is reported separately upstream.)
+keeps every call to ≤4 arguments, and no self-host claim is made by the *bug
+demo* jobs. (A gcc-built tcc of the same patched source self-hosts, and the
+full series — ten tcc patches plus one mes-side codegen fix — drives the
+*MesCC*-built arm tcc to a byte-identical self-host fixpoint as well; that
+fuller result is what the separate `fixpoint` workflow reproduces from the
+seed, and it is reported upstream.)
 
-> **Canonical fixpoint reference** (external to this CI, for the upstream
-> report — *not* proven by the four jobs here): the MesCC-built arm `tcc`
-> self-hosts from the hex0 seed to a byte-identical fixpoint at generation 2 —
-> `boot2` and `boot3` are identical, sha256
-> `6aa69584c76a6b23d4e515ac9f0f29dce857225bf1f0ee44f7b6e12ef9666f28`. The full
-> per-generation lineage and `SHA256SUMS` accompany that upstream report; those
-> bytes come from the main bootstrap driver, not from the jobs in this repo.
+> **Self-host fixpoint reference.** The MesCC-built arm `tcc` self-hosts from
+> the hex0 seed to a byte-identical fixpoint — two successive `tcc`-built
+> generations come out identical (`boot2 == boot3`, the same generation-2==3
+> depth a gcc-built tcc of the identical source converges at). Two lineages,
+> two anchors: the seven-patch milestone (tinycc 0001–0007 + mes/0001) is
+> sha256 `6aa69584c76a6b23d4e515ac9f0f29dce857225bf1f0ee44f7b6e12ef9666f28`;
+> the full ten-patch series (tinycc 0001–0010 + mes/0001, adding the `#`-token,
+> `.word` width, and bounded arm inline assembler for musl) is
+> `f87f43d4cc2d80d8bf35811c8bf87ce11d047e0d5adf8aa9eb0170e34d9a82b0`.
+>
+> **These shas are prefix-specific, not portable constants.** tcc bakes
+> `CONFIG_TCCDIR` / `CONFIG_TCC_LIBPATHS` / `CONFIG_TCC_CRTPREFIX` /
+> `CONFIG_TCC_SYSINCLUDEPATHS` / `TCC_LIBGCC` into every binary as string
+> constants (and `-g` records absolute debug paths), so the fixpoint bytes are
+> specific to the build tree's location — reproducible across re-runs on the
+> same layout, different on another machine. The portable claim is the
+> convergence *property* (`boot2 == boot3`, byte-identical), never any one sha.
+> The `fixpoint` workflow (`.github/workflows/fixpoint.yml`) drives the
+> ten-patch self-host from the seed on a stock runner and **hard-asserts that
+> property**; it logs the full per-generation sha set and diffs `boot2` against
+> the local-lineage `f87f43d4…` for information only — it differs there by
+> construction, because the runner's build path is not the one that produced
+> `f87f43d4…`.
 
 The fixed job also needs three ABI/runtime prerequisites orthogonal to the tcc
 bugs: `-D TCC_TARGET_ARM=1` when compiling `lib/libtcc1.c` (to skip its

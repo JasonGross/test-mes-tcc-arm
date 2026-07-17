@@ -1,0 +1,78 @@
+From 43f264174214ccf1cf8f96d22ef11da35725050f Mon Sep 17 00:00:00 2001
+From: Jason Gross <jason@theorem.dev>
+Date: Thu, 16 Jul 2026 17:11:53 +0000
+Subject: [PATCH] arm: never emit an immediate shift of 0 (ASR/LSR #0 mean #32
+ on ARM)
+
+The self-host blocker for the MesCC-built arm tcc (bug #14): tcc-boot0
+(built by MesCC) miscompiles tcc.c into a tcc-boot1 that SIGSEGVs at
+startup, even `-version`, while interning the keyword table.
+
+Mechanism, traced end to end.  tcc lowers `char* - char*` as
+`(a - b) / 1` (TOK_PDIV, element size 1).  gen_opic's NOP filter should
+drop the divide-by-1 and emit nothing.  A gcc-built tcc does exactly
+that.  A MesCC-built tcc-boot0 miscompiles that NOP filter -- a
+context-triggered collapse of the multi-term relational OR-chain, the
+same MesCC family as the CMP (patch 3) and VFP (patch 6) fixes -- so the
+divide-by-1 is NOT recognised as a NOP.  It falls into the
+div->shift-by-log2 conversion, computes a shift count of 0, and calls
+gen_opi with TOK_SAR and constant 0.
+
+gen_opi's case 2 then emits `MOV Rd, Rm, ASR #0`.  On ARM an immediate
+shift of 0 is NOT the identity: ASR #0 and LSR #0 both encode as
+shift-by-32 (and ROR #0 is RRX); only LSL #0 is the plain `MOV Rd, Rm`
+one wants.  So `asr r0, r0, #32` replaces the pointer difference with its
+sign bit (0): `r - p - 1` for every keyword becomes 0 - 1 = -1, and
+`tok_alloc_new` calls `memcpy(ts->str, str, (size_t)-1)` -> 4 GB copy ->
+heap overrun -> SIGSEGV before main runs.
+
+Guard case 2's constant path: when the masked count is 0, clear the
+shift-type field so every shift-by-zero emits `MOV Rd, Rm` -- the true
+no-op for LSL, LSR and ASR alike.  Verified with objdump: the guard
+turns both the buggy 0xE1A0x040 (asr #32) and 0xE1A0x020 (lsr #32) into
+0xE1A0x000 (mov).  The register-controlled shift path (`MOV Rd,Rm,asr
+Rs`) is untouched: ARM handles a *register* shift amount of 0 correctly;
+only an *immediate* 0 means 32.
+
+This is a semantic no-op for a correct compiler: a gcc-built tcc's NOP
+filter folds x<<0 / x>>0 / (x/1) away and never reaches gen_opi with a
+zero count, so a gcc build is byte-identical with and without this
+patch (its safety proof).  It only rescues the MesCC-built tcc whose
+miscompiled NOP filter lets such a case through.  The guard is a plain
+if statement -- no conditional inside an OR-chain -- so MesCC compiles
+it correctly.  The underlying MesCC OR-chain miscompile is reported to
+bug-mes separately with the CMP/VFP reproducers; this is its third
+load-bearing manifestation.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0135X6tRviSFCswBbHXxQofc
+---
+ arm-gen.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/arm-gen.c b/arm-gen.c
+index 1da1eb04..97bfd6aa 100644
+--- a/arm-gen.c
++++ b/arm-gen.c
+@@ -1738,6 +1738,18 @@ done:
+       if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST) {
+ 	fr=intr(vtop[-1].r=get_reg_ex(RC_INT,regmask(vtop[-1].r)));
+ 	c = vtop->c.i & 0x1f;
++	if (c == 0)
++	  /* An immediate shift of 0 is not a no-op on ARM: LSR #0 and ASR #0
++	     both encode as shift-by-32 (RRX for ROR), and only LSL #0 is the
++	     plain MOV Rd,Rm we want.  Clear the shift-type field so a zero
++	     count always emits MOV Rd,Rm -- the true "shift by zero" for every
++	     type.  A correct compiler folds x<<0 / x>>0 / (x/1 pointer diff)
++	     away in tccgen's NOP filter and never reaches here, so this is a
++	     byte-identical no-op for a gcc-built tcc; it only rescues a
++	     MesCC-built tcc whose miscompiled NOP filter lets such a case fall
++	     through to a SAR/SHR #0 (bug #14).  Kept a plain if-guard on
++	     purpose: MesCC-safe (no conditional inside an OR-chain). */
++	  opc &= ~(3 << 5);
+ 	o(opc|(c<<7)|(fr<<12));
+       } else {
+         fr=intr(gv(RC_INT));
+-- 
+2.39.5
+

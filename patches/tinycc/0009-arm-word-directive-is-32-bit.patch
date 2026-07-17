@@ -1,0 +1,52 @@
+From d1034095804738d27b0041c0b64c1cb335ceca9a Mon Sep 17 00:00:00 2001
+From: Jason Gross <jason@theorem.dev>
+Date: Thu, 16 Jul 2026 22:50:00 +0000
+Subject: [PATCH 09/10] arm: ".word" emits a 32-bit datum (only x86 treats it
+ as 16-bit)
+
+tccasm.c groups the `.word` directive with `.short`, giving both
+size = 2. That is the x86 convention (`.word` is 16 bits there), but on
+ARM -- and in GNU as generally for ARM -- `.word` is a 32-bit datum.
+Under the fork, every ARM `.word` was silently truncated to two bytes.
+
+Found by the bootstrap. musl-1.1.24's a_crash() emits `.word 0xe7f000f0`
+(the ARM permanently-undefined instruction) inline. Assembled as 2 bytes
+instead of 4, it left the enclosing text section 2-byte misaligned; the
+next inline function's 4-byte-aligned branch-fixup chain (linked through
+the 24-bit branch immediate) then walked corrupted offsets, and tcc
+SIGSEGV'd in decbranch/gsym_addr while compiling malloc.c. Discriminator:
+an atomic sequence ending in a real `dmb` instruction assembled fine; the
+same sequence ending in the `.word`-encoded crash did not -- isolating
+the directive, not the codegen.
+
+Split `.word` (size = 4 on ARM) from `.short` (size = 2). This is an
+independently-correct, mainline-relevant assembler bug: current tinycc
+carries the same grouping. tcc's own self-compilation emits no `.word`
+inline asm, so the milestone-3 boot2==boot3 fixpoint is unaffected by
+this fix.
+---
+ tccasm.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/tccasm.c b/tccasm.c
+index 9e0882d..0564773 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -580,6 +580,14 @@ static void asm_parse_directive(TCCState *s1, int global)
+         size = 1;
+         goto asm_data;
+     case TOK_ASMDIR_word:
++#ifdef TCC_TARGET_ARM
++        /* On ARM (and per GNU as), ".word" is a 32-bit datum; only x86 treats
++           it as 16-bit. The fork inherited x86's size=2, which silently
++           truncated musl's `.word 0xe7f000f0` (a_crash) to 2 bytes and left
++           the section 2-byte-misaligned, corrupting later branch fixups. */
++        size = 4;
++        goto asm_data;
++#endif
+     case TOK_ASMDIR_short:
+         size = 2;
+         goto asm_data;
+-- 
+2.39.5
+
