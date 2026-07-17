@@ -261,12 +261,17 @@ EOF
 
 # ---- hello proof: the tcc under test is a working compiler+linker ------------
 hello_proof() { # $1 = tcc binary, $2 = label
-  local T="$1" tag="$2" out="$WORK/hello-arm-$2" o
+  local T="$1" tag="$2" out="$WORK/hello-arm-$2" got rc
   run_arm "$T" -static -o "$out" -L "$LIBDIR" -L "$LIBDIR/tcc" -I "$PREFIX/include/mes" \
     -I "$PREFIX/include/mes/linux/arm" "$HERE/hello.c"
-  o="$(run_arm "$out" 2>&1)" || die "hello ($tag) did not run"
-  [ "$o" = "hello from tcc-armv7l" ] || die "hello ($tag) wrong output: $o"
-  msg "hello proof ($tag): ran, printed \"$o\""
+  # hello.c EXITS 76 BY DESIGN (sum_to(10)=55 + slen=21) -- the exit code is the
+  # spurious-pass proof (an integer-add or CMP miscompile cannot land on 76). Do
+  # NOT read that nonzero exit as a run failure: capture it (set +e, as gate()
+  # does) and assert it is 76. Printing got/rc keeps a real failure diagnosable.
+  set +e; got=$(run_arm "$out" 2>&1); rc=$?; set -e
+  [ "$rc" -eq 76 ] || die "hello ($tag) did not exit 76 (=55+21; add/CMP miscompile?) -- exit $rc, output: [$got]"
+  [ "$got" = "hello from tcc-armv7l" ] || die "hello ($tag) wrong output: [$got]"
+  msg "hello proof ($tag): ran, printed \"$got\", exit 76 (55+21)"
 }
 
 # ---- a boot generation: tcc(prev) compiles tcc.c -> next; regate; rebuild libc
