@@ -23,8 +23,13 @@ concurrency:
 # timeout. bug1-parse fails in the parser and is the quickest; bug2-token
 # carries a full ~TU compile up to the hex2 link; fixed carries fix1+2+3
 # through to a tcc-mes that compiles+runs a hello (exit 76 = 55+21,
-# spurious-pass-proof -- see README). bug3-cmp and word-directive are fast,
-# self-contained encoding/width A/Bs that need no bootstrap at all. The full
+# spurious-pass-proof -- see README). bug11-orchain bootstraps the STOCK
+# mes-m2 and MesCC-compiles an 8-line reproducer (no tcc.c compile -- it is
+# bootstrap-dominated, ~1h, not multi-hour): host gcc builds it correctly,
+# stock MesCC drops the pre-conditional OR-terms (the miscompile tcc patch
+# 0006 works around), and patch 0006's rewrite compiles correctly. bug3-cmp
+# and word-directive are fast, self-contained encoding/width A/Bs that need no
+# bootstrap at all. The full
 # mes/0001 + tinycc 0001-0010 self-host fixpoint (boot2==boot3) is exercised
 # by a separate, path-isolated workflow (fixpoint.yml) so its multi-hour run
 # does not re-trigger this bug-demo matrix on every push.
@@ -74,3 +79,16 @@ jobs:
           sudo apt-get install -y -q gcc-arm-linux-gnueabihf
       - name: "A/B the .word width (stock truncates to 2 bytes vs fix9 emits 4)"
         run: ./word.sh
+
+  bug11-orchain:
+    name: "bug11-orchain (MesCC OR-chain drop; tcc patch 0006 works around)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install qemu-user (AArch32 execution)
+        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-user-static
+      - name: Bootstrap (stage0 hex0 seed -> armv7l mes-m2 -> nyacc)
+        run: ./bootstrap.sh
+      - name: "Demonstrate the MesCC OR-chain miscompile (bug shape != 0) and patch 0006's rewrite (fixed shape == 0)"
+        run: ./orchain.sh
