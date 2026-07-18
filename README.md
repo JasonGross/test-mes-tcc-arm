@@ -1,5 +1,13 @@
 # Three arm bugs block the MesCC armv7l bootstrap of janneke's tcc
 
+[![bug demos](https://github.com/JasonGross/test-mes-tcc-arm/actions/workflows/ci.yml/badge.svg)](https://github.com/JasonGross/test-mes-tcc-arm/actions/workflows/ci.yml)
+[![self-host fixpoint](https://github.com/JasonGross/test-mes-tcc-arm/actions/workflows/fixpoint.yml/badge.svg)](https://github.com/JasonGross/test-mes-tcc-arm/actions/workflows/fixpoint.yml)
+
+(Live status: the **bug demos** badge is the `ci.yml` matrix — the three
+from-seed MesCC bug jobs plus the fast `bug3-cmp` / `word-directive` A/Bs; the
+**self-host fixpoint** badge is `fixpoint.yml`, the from-seed ten-patch
+`boot2 == boot3` self-host. Both track the default branch's latest run.)
+
 **Summary.** janneke's mes fork of tcc (`tcc-0.9.26-1147-gee75a10c`, the
 tarball [live-bootstrap](https://github.com/fosslinux/live-bootstrap) pins)
 ships a complete ARM backend, but it has never been driven through MesCC for
