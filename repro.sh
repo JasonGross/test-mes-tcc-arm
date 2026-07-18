@@ -119,31 +119,6 @@ print("\n".join(out))' "$1" "$2"; }
 # ---- assert helpers ----
 die() { echo "UNEXPECTED: $*"; exit 1; }
 
-# Disassemble the tcc-mes-emitted binary's user functions so a SURPRISE result
-# (bug #9's argbug2 not exiting 100) is diagnosable from this one run -- the
-# wrong >4-arg cleanup shows up as an out-of-balance post-call `add sp,sp,#N`.
-# Best-effort: if no arm objdump is on PATH the exit code above is still the
-# primary signal, so print a NOTE and never fail the job on the dump itself.
-dump_cleanup_disasm() {   # $1 = binary path
-  od=$(command -v arm-linux-gnueabihf-objdump || command -v objdump || true)
-  if [ -z "$od" ]; then
-    echo "NOTE: no arm objdump on PATH -- cannot disassemble $1 (the exit code above is the primary signal)"
-    return 0
-  fi
-  echo "---- objdump -d of the tcc-mes-emitted $(basename "$1"): main/f7/g4 (look for the post-'bl' 'add sp,sp,#N' balance) ----"
-  dis=$("$od" -d "$1" 2>/dev/null | awk '
-    /^[0-9a-f]+ <(main|f7|g4)>:/ {inf=1; print; next}
-    /^[0-9a-f]+ <[^>]+>:/        {inf=0; next}
-    inf {print}')
-  if [ -n "$dis" ]; then
-    printf '%s\n' "$dis"
-  else
-    echo "(no main/f7/g4 symbols -- binary may be stripped; full .text head follows)"
-    "$od" -d "$1" 2>/dev/null | sed -n '1,200p' || true
-  fi
-  echo "---- (end $(basename "$1") disasm) ----"
-}
-
 case "$MODE" in
 
   parse)
@@ -278,8 +253,8 @@ PY
     # non-zero SBZ field (0xe3511000) that qemu faults as SIGILL; and sum_to()
     # adds in a loop. The exit code encodes 55+21 = 76, so an add miscompile
     # (which zeroes the loop counters) hangs or mis-exits rather than passing
-    # spuriously. Every call in hello.c is <=4 args -- the separate MesCC
-    # >4-arg call-cleanup miscompile is demonstrated by argbug2 below.
+    # spuriously. Every call in hello.c is <=4 args -- a separate MesCC
+    # >4-arg call-cleanup miscompile (tracked upstream) is out of scope here.
     msg "run the tcc-mes-compiled hello under qemu-arm (must print + exit 76)"
     set +e
     got=$(run_arm "$out" 2>&1); rc=$?
@@ -290,35 +265,5 @@ PY
     echo "PASS: fix1+fix2+fix3 -> MesCC builds a working tcc-mes (version 0.9.26)"
     echo "      that compiles+links a hello which exercises CMP + integer add"
     echo "      and runs under qemu-arm (exit 76, correct output)."
-
-    # ---- bug #9 demo: the >4-argument call-cleanup miscompile ----
-    # This tcc-mes is the 3-patch build (fix1+2+3); it LACKS tcc patch 0004
-    # (derive gfunc_call's stack cleanup from copy_params' actual pushes). So
-    # stock MesCC miscompiled its assign_regs-derived cleanup, and this tcc-mes's
-    # own codegen cleans up the wrong number of bytes after a call with >4
-    # stacked arguments -- clobbering the caller's locals. argbug2.c makes a
-    # 7-arg call then checks four locals; the wrong cleanup corrupts them ->
-    # exit 100. (hello above is all <=4-arg, so it never exercises this, which
-    # is why a dedicated program is needed.)
-    #
-    # Cross-workflow A/B (documented in data/mescc-bugs/bug09-argcleanup):
-    #   broken here -- ci.yml's 3-patch "fixed" job:   argbug2 -> exit 100
-    #   fixed there -- fixpoint.yml's full-stack gate: argbug2 -> exit 0
-    #                  (patch 0004 applied; same source, patch 0004 the only diff).
-    msg "bug #9: this 3-patch tcc-mes miscompiles a >4-arg call cleanup (argbug2 must exit 100)"
-    run_arm "$TCC" -static -o "$WORK/argbug2" -L "$LIBDIR" -L "$LIBDIR/tcc" \
-      -I "$PREFIX/include/mes" -I "$PREFIX/include/mes/linux/arm" "$HERE/argbug2.c"
-    test -x "$WORK/argbug2" || die "tcc-mes did not produce an argbug2 binary"
-    set +e
-    run_arm "$WORK/argbug2"; arc=$?
-    set -e
-    echo "argbug2 exit: $arc  (100 = locals clobbered by the wrong >4-arg cleanup; 0 = fixed by patch 0004)"
-    if [ "$arc" -ne 100 ]; then
-      echo "SURPRISE: expected argbug2 exit 100 (bug #9 >4-arg call cleanup), got $arc -- dumping the cleanup disasm:"
-      dump_cleanup_disasm "$WORK/argbug2"
-      die "argbug2 did not exit 100 (bug #9 >4-arg call cleanup) -- exit $arc (see disasm above)"
-    fi
-    echo "PASS: the 3-patch tcc-mes miscompiles the >4-arg call cleanup (argbug2 exit 100) --"
-    echo "      the bug patch 0004 fixes; fixpoint.yml's full-stack gate runs the same argbug2 -> 0."
     ;;
 esac

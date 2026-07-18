@@ -47,8 +47,8 @@ jobs:
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
-      - name: Install qemu-user + arm binutils (AArch32 exec + bug09 mismatch objdump)
-        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-user-static binutils-arm-linux-gnueabihf
+      - name: Install qemu-user (AArch32 execution)
+        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-user-static
       - name: Bootstrap (stage0 hex0 seed -> armv7l mes-m2 -> nyacc -> fetch tcc)
         run: ./bootstrap.sh
       - name: "Reproduce: ${{ matrix.mode }}"
