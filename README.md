@@ -4,7 +4,8 @@
 [![self-host fixpoint](https://github.com/JasonGross/test-mes-tcc-arm/actions/workflows/fixpoint.yml/badge.svg)](https://github.com/JasonGross/test-mes-tcc-arm/actions/workflows/fixpoint.yml)
 
 (Live status: the **bug demos** badge is the `ci.yml` matrix — the three
-from-seed MesCC bug jobs plus the fast `bug3-cmp` / `word-directive` A/Bs; the
+from-seed MesCC bug jobs, the from-seed `bug11-orchain` OR-chain reproducer
+(~1h), plus the fast `bug3-cmp` / `word-directive` A/Bs; the
 **self-host fixpoint** badge is `fixpoint.yml`, the from-seed ten-patch
 `boot2 == boot3` self-host. Both track the default branch's latest run.)
 
@@ -189,11 +190,12 @@ fixes for that case, and asserts the outcome. The mes arm MesCC libc archives
 `build-aux/configure-lib.sh` source lists. `bug3.sh` is a standalone A/B for
 bug 3 that needs neither the bootstrap nor MesCC.
 
-CI (`.github/workflows/ci.yml`) runs five independent jobs on stock Ubuntu
+CI (`.github/workflows/ci.yml`) runs six independent jobs on stock Ubuntu
 runners. Three of them (bug1-parse, bug2-token, fixed) rebuild the toolchain
 from the seed and run MesCC over the full `tcc.c` — hours under `qemu-arm`,
-hence the long per-job timeout; bug3-cmp and word-directive are fast host-gcc
-A/Bs (minutes, no bootstrap):
+hence the long per-job timeout; bug11-orchain also bootstraps from the seed but
+MesCC-compiles only an 8-line reproducer (bootstrap-dominated, ~1h, no `tcc.c`);
+bug3-cmp and word-directive are fast host-gcc A/Bs (minutes, no bootstrap):
 
 - **bug1-parse** — stock tarball → MesCC `-S` fails with
   `parse failed at state 367, on input "{"`.
@@ -224,13 +226,29 @@ A/Bs (minutes, no bootstrap):
   32-bit datum to 2 bytes (`f000`), `fix9` emits the full 4 (`f000f0e7`). It
   only reads the bytes tcc wrote; it never runs or links them, so it isolates
   the directive width from any codegen or emulation behaviour.
+- **bug11-orchain** — a from-seed demonstration (bootstrap-dominated, ~1h, no
+  `tcc.c` compile) of the MesCC OR-chain miscompile that tcc patch 0006 works
+  around. It bootstraps the stock `mes-m2` and MesCC-compiles an 8-line
+  reproducer — `base | r2 | ((t & 0xf) != 8 ? 0x100 : 0)` — across three builds:
+  host gcc computes the full value, **stock MesCC drops the OR-terms that
+  precede the inline conditional** (the r0 accumulator is overwritten when the
+  relational's boolean materializes, so only `0x100` survives), and patch
+  0006's source-side lift of the conditional into its own local restores the
+  correct value. The job prints the MesCC `:f` assembly for both the bug and the
+  fixed shape and self-tests its own hex serializer before trusting any reported
+  value, so the term-drop is legible from the single job log. It makes no
+  self-host claim — it isolates the MesCC bug that patch 0006 mitigates, not
+  tcc's ability to build without it.
 
 bug1-parse and bug2-token demonstrate bugs 1 and 2 directly — each stops at
 the predicted failure. bug3-cmp isolates bug 3 to the single faulting
 instruction and shows the works-on-silicon / faults-on-qemu behavior with a
 gcc-built oracle, independent of MesCC, so fix 3's encoding change is verified
 on its own. **fixed** carries all three fixes through to a `tcc-mes` that
-compiles and runs real code.
+compiles and runs real code. bug11-orchain isolates the MesCC OR-chain
+miscompile that tcc patch 0006 works around, showing the pre-conditional
+term-drop directly under MesCC (host gcc and patch 0006's lifted shape both
+compute the correct value).
 
 **Claim boundary.** This repository's CI proves the three bugs and a
 *three-patch* fixed build: with fix1+fix2+fix3 the MesCC-built `tcc-mes`
