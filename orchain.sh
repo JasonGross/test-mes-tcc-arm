@@ -20,6 +20,11 @@
 #       conditional lifted into its own local) and the ELF returns 0
 #       -> the rewrite dodges the miscompile.
 #
+# Diagnosable from a single run: for BOTH shapes we dump the MesCC-emitted
+# assembly for f() and print the value main() actually computed (f(3)=0x....);
+# every assertion prints expected-vs-got on failure. So if stock mes on the
+# runner ever surprises us in either direction, this log alone explains it.
+#
 # Exit status is non-zero unless (A)=0, (B)!=0 and (C)=0 all hold.
 set -eu
 
@@ -73,44 +78,68 @@ print("\n".join(out))' "$1" "$2"; }
   cat "$A/libc.a" libctcc.o > "$A/libc+tcc.a"; cat "$A/libc.s" libctcc.s > "$A/libc+tcc.s"
 }
 
+# ---- dump the MesCC-emitted assembly for f() (stock mes) from a reproducer.
+# Best-effort: the RUN below is the primary evidence, so a missing .s only
+# prints a NOTE rather than failing the job. ----
+dump_f_asm() {   # $1 = source basename in $HERE, $2 = short description
+  cd "$WORK"
+  cp "$HERE/$1" "./$1"
+  MESCC -D HAVE_CONFIG_H=1 -I "$M/include" -I "$M/include/linux/arm" -c "$1" \
+    > "asm-${1%.c}.log" 2>&1 || true
+  s="${1%.c}.s"
+  if [ ! -f "$s" ]; then
+    echo "NOTE: no MesCC assembly ($s) found for $1 -- skipping the f() dump"
+    echo "      (mescc -c log tail:)"; tail -3 "asm-${1%.c}.log" 2>/dev/null || true
+    return 0
+  fi
+  echo "---- MesCC-emitted assembly for f() from $1 ($2) ----"
+  # print f()'s block: start at the :f label, stop at the next top-level function
+  # label (:name, not a :_local) or the '<' function separator.
+  awk '/^:f$/{inf=1;print;next} inf&&(/^:[^_]/||/^</){exit} inf{print}' "$s"
+  echo "---- (end f() from $1) ----"
+}
+
 # ---- compile a source with the STOCK arm MesCC, link a runnable armv7l ELF,
-# run it under qemu-arm, echo the exit code ----
+# run it under qemu-arm; prints the program's own stdout (self=/f(3)= lines)
+# and sets global RC to its exit code ----
 mescc_run() {   # $1 = source, $2 = output name -> sets global RC
   cd "$WORK"
   MESCC -D HAVE_CONFIG_H=1 -I "$M/include" -I "$M/include/linux/arm" \
     -o "$2" -L "$M/lib" "$HERE/$1" -l c+tcc
-  test -x "$2" || die "$1: MesCC did not produce an ELF"
-  case "$(file "$2")" in *"ELF 32-bit"*ARM*) : ;; *) die "$1: not an armv7l ELF" ;; esac
-  set +e; run_arm "./$2" >/dev/null 2>&1; RC=$?; set -e
+  test -x "$2" || die "$1: MesCC produced no ELF (expected an executable at $WORK/$2)"
+  case "$(file "$2")" in *"ELF 32-bit"*ARM*) : ;; *) die "$1: linked output is not an armv7l ELF" ;; esac
+  set +e; run_arm "./$2"; RC=$?; set -e
 }
 
 msg "(A) host gcc: orchain-bug.c is correct C (the fault below is MesCC's)"
 gcc -O0 -o "$WORK/orchain-gcc" "$HERE/orchain-bug.c"
 set +e; "$WORK/orchain-gcc"; grc=$?; set -e
-echo "--> host gcc orchain-bug exit $grc"
-[ "$grc" -eq 0 ] || die "host gcc did not return 0 on orchain-bug.c (exit $grc) -- source is not correct?"
+echo "--> host gcc orchain-bug exit $grc  (expected 0; the 'f(3)=' line above should read 0xeeb80b40)"
+[ "$grc" -eq 0 ] || die "host gcc orchain-bug: expected exit 0 (source correct), got $grc -- source is not correct?"
 
 msg "build the mes arm libc archives (crt1 + exit, to link a runnable ELF)"
 build_mes_libc
 
-msg "(B) STOCK MesCC: orchain-bug.c -> the OR-chain miscompile, RUN under qemu-arm"
+msg "(B) STOCK MesCC: orchain-bug.c -> the OR-chain miscompile"
+dump_f_asm orchain-bug.c "miscompiled shape: base 0xEEB80A00|0x40 should survive but is dropped"
 mescc_run orchain-bug.c orchain-bug
 bug_rc=$RC
-echo "--> stock-MesCC orchain-bug exit $bug_rc  (0 = correct; 2 = base OR-terms dropped; 3 = other wrong value)"
-[ "$bug_rc" -ne 0 ] || die "orchain-bug ran correctly under stock MesCC (exit 0) -- the OR-chain miscompile did not reproduce"
+echo "--> stock-MesCC orchain-bug exit $bug_rc  (expected NON-zero; 2 = base OR-terms dropped to 0x100; 3 = other wrong value; the 'f(3)=' line above shows the actual value)"
+[ "$bug_rc" -ne 0 ] || die "orchain-bug under stock MesCC: expected NON-zero (OR-chain miscompile), got 0 (ran correctly) -- the miscompile did not reproduce; see the f() assembly and f(3)= value above"
 if [ "$bug_rc" -ne 2 ]; then
-  echo "NOTE: expected 2 (base dropped to 0x100); got $bug_rc -- still a miscompile (non-zero), but a different residual"
+  echo "NOTE: expected 2 (base dropped, f(3)=0x00000100); got $bug_rc -- still a miscompile (non-zero), but a different residual value (see f(3)= above)"
 fi
 
-msg "(C) STOCK MesCC: orchain-fixed.c (patch 0006's rewrite) -> correct, RUN under qemu-arm"
+msg "(C) STOCK MesCC: orchain-fixed.c (patch 0006's rewrite) -> correct"
+dump_f_asm orchain-fixed.c "fixed shape: conditional lifted to its own local; base survives"
 mescc_run orchain-fixed.c orchain-fixed
 fix_rc=$RC
-echo "--> stock-MesCC orchain-fixed exit $fix_rc  (0 = correct)"
-[ "$fix_rc" -eq 0 ] || die "orchain-fixed did not run correctly under stock MesCC (exit $fix_rc) -- patch 0006's rewrite should dodge the bug"
+echo "--> stock-MesCC orchain-fixed exit $fix_rc  (expected 0; the 'f(3)=' line above should read 0xeeb80b40)"
+[ "$fix_rc" -eq 0 ] || die "orchain-fixed under stock MesCC: expected exit 0 (rewrite dodges the bug), got $fix_rc -- patch 0006's rewrite should compile correctly; see the f() assembly and f(3)= value above"
 
 echo
-echo "PASS: stock MesCC drops the pre-conditional OR-terms (orchain-bug exit $bug_rc),"
-echo "      but compiles patch 0006's rewrite correctly (orchain-fixed exit 0)."
-echo "      host gcc builds the same orchain-bug.c correctly (exit 0), so the"
+echo "PASS: stock MesCC drops the pre-conditional OR-terms (orchain-bug exit $bug_rc, f(3) came back 0x00000100),"
+echo "      but compiles patch 0006's rewrite correctly (orchain-fixed exit 0, f(3)=0xeeb80b40)."
+echo "      host gcc builds the same orchain-bug.c correctly (exit 0, f(3)=0xeeb80b40), so the"
 echo "      miscompile is MesCC's, not a tcc/source bug. This is the MesCC"
 echo "      OR-chain miscompile that tcc patch 0006 (VFP T2CPR) works around."
