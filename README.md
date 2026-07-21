@@ -6,7 +6,7 @@
 (Live status: the **bug demos** badge is the `ci.yml` matrix — the three
 from-seed MesCC bug jobs, the from-seed `bug11-orchain` OR-chain reproducer
 (~1h), plus the fast `bug3-cmp` / `word-directive` A/Bs; the
-**self-host fixpoint** badge is `fixpoint.yml`, the from-seed ten-patch
+**self-host fixpoint** badge is `fixpoint.yml`, the from-seed twelve-patch
 `boot2 == boot3` self-host. Both track the default branch's latest run.)
 
 **Summary.** janneke's mes fork of tcc (`tcc-0.9.26-1147-gee75a10c`, the
@@ -250,6 +250,21 @@ miscompile that tcc patch 0006 works around, showing the pre-conditional
 term-drop directly under MesCC (host gcc and patch 0006's lifted shape both
 compute the correct value).
 
+**No fast A/B for the init_putv FP-constant bug (patches 0011/0012).** Unlike
+`bug3-cmp` and `word-directive`, the `init_putv` materialization bug that
+patches 0011 (float/double) and 0012 (long double) fix cannot be shown by a
+host-gcc oracle A/B, so there is deliberately no such job. The faulty store
+lives in init_putv's `#if BOOTSTRAP && __arm__` arm and only executes when the
+compiler *itself* is an arm build with `sizeof(long double) == LDOUBLE_SIZE ==
+8` — both false for the x86-64 host that runs the fast jobs, so a host oracle
+never reaches the code. A `-DBOOTSTRAP=1` host build does not even compile: it
+hits bug 1 (`avregs = AVAIL_REGS_INITIALIZER` expands to a brace re-assignment)
+first. A faithful demonstration therefore needs an arm-cross-built tcc executed
+under `qemu-arm` — the heavy, from-seed path — which is exactly what the
+`fixpoint` workflow already exercises now that it carries 0001–0012. The
+constant-level evidence (the fixed tcc's emitted long-double bytes match an
+arm-gcc oracle) is recorded in the main route notes rather than as a CI job.
+
 **Claim boundary.** This repository's CI proves the three bugs and a
 *three-patch* fixed build: with fix1+fix2+fix3 the MesCC-built `tcc-mes`
 compiles, links, and runs the hello. At that three-patch scope it does **not**
@@ -258,7 +273,7 @@ miscompiles — both are downstream of further tcc-codegen / MesCC bugs addresse
 by additional patches that these jobs do not exercise. The hello therefore
 keeps every call to ≤4 arguments, and no self-host claim is made by the *bug
 demo* jobs. (A gcc-built tcc of the same patched source self-hosts, and the
-full series — ten tcc patches plus one mes-side codegen fix — drives the
+full series — twelve tcc patches plus one mes-side codegen fix — drives the
 *MesCC*-built arm tcc to a byte-identical self-host fixpoint as well; that
 fuller result is what the separate `fixpoint` workflow reproduces from the
 seed, and it is reported upstream.)
@@ -266,12 +281,22 @@ seed, and it is reported upstream.)
 > **Self-host fixpoint reference.** The MesCC-built arm `tcc` self-hosts from
 > the hex0 seed to a byte-identical fixpoint — two successive `tcc`-built
 > generations come out identical (`boot2 == boot3`, the same generation-2==3
-> depth a gcc-built tcc of the identical source converges at). Two lineages,
-> two anchors: the seven-patch milestone (tinycc 0001–0007 + mes/0001) is
-> sha256 `6aa69584c76a6b23d4e515ac9f0f29dce857225bf1f0ee44f7b6e12ef9666f28`;
-> the full ten-patch series (tinycc 0001–0010 + mes/0001, adding the `#`-token,
-> `.word` width, and bounded arm inline assembler for musl) is
-> `f87f43d4cc2d80d8bf35811c8bf87ce11d047e0d5adf8aa9eb0170e34d9a82b0`.
+> depth a gcc-built tcc of the identical source converges at). The `fixpoint`
+> workflow now drives the full **twelve-patch** series (tinycc 0001–0012 +
+> mes/0001). Patches 0011 and 0012 add the two `init_putv` FP-constant
+> bit-copies (float/double, then long double): they change tcc's own binary
+> bytes — so the boot-generation shas move from the earlier milestones — but
+> leave the self-host convergence intact, since `tcc.c` itself materializes no
+> such constants. Historical local-lineage anchors, for reference: the
+> seven-patch milestone (0001–0007 + mes/0001) is sha256
+> `6aa69584c76a6b23d4e515ac9f0f29dce857225bf1f0ee44f7b6e12ef9666f28`; the
+> ten-patch stack (0001–0010 + mes/0001, adding the `#`-token, `.word` width,
+> and bounded arm inline assembler for musl) is
+> `f87f43d4cc2d80d8bf35811c8bf87ce11d047e0d5adf8aa9eb0170e34d9a82b0`. The
+> twelve-patch `boot2 == boot3` anchor observed on the GitHub-hosted runner is
+> `ef0ecd960597e891517c48b952ff181e8e185a73fddaf2840a7e558586bcd033`
+> (recorded from the green fixpoint run; the
+> workflow logs it as `twelve-patch boot2==boot3 anchor (this run)`).
 >
 > **These shas are prefix-specific, not portable constants.** tcc bakes
 > `CONFIG_TCCDIR` / `CONFIG_TCC_LIBPATHS` / `CONFIG_TCC_CRTPREFIX` /
@@ -281,11 +306,10 @@ seed, and it is reported upstream.)
 > same layout, different on another machine. The portable claim is the
 > convergence *property* (`boot2 == boot3`, byte-identical), never any one sha.
 > The `fixpoint` workflow (`.github/workflows/fixpoint.yml`) drives the
-> ten-patch self-host from the seed on a stock runner and **hard-asserts that
-> property**; it logs the full per-generation sha set and diffs `boot2` against
-> the local-lineage `f87f43d4…` for information only — it differs there by
-> construction, because the runner's build path is not the one that produced
-> `f87f43d4…`.
+> twelve-patch self-host from the seed on a stock runner and **hard-asserts that
+> property**; it logs the full per-generation sha set and records `boot2`'s sha
+> as the twelve-patch anchor above (reproducible on the runner's fixed build
+> layout, different on another machine).
 
 The fixed job also needs three ABI/runtime prerequisites orthogonal to the tcc
 bugs: `-D TCC_TARGET_ARM=1` when compiling `lib/libtcc1.c` (to skip its
