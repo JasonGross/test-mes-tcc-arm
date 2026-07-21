@@ -5,7 +5,7 @@
 # the parse/token/fixed reproducers -- which apply only fix1/2/3 and stop at a
 # tcc-mes that compiles+runs hello -- this job carries the FULL patch set and
 # proves the headline claim: with the mes patch (mes/0001) plus the complete
-# tinycc series (0001-0010), a MesCC-built tcc self-hosts to a byte-identical
+# tinycc series (0001-0012), a MesCC-built tcc self-hosts to a byte-identical
 # fixpoint on armv7l, from the hex0 seed:
 #
 #     tcc-mes -> tcc-boot0 -> tcc-boot1 -> tcc-boot2 == tcc-boot3   (under qemu-arm)
@@ -26,9 +26,12 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 msg() { printf '\n\033[1m:: %s\033[0m\n' "$*"; }
 die() { echo "UNEXPECTED: $*"; exit 1; }
 
-# Local-lineage boot2==boot3 reference (arm-pivot-tcc.sh, run14, 0001-0010 +
-# mes/0001). NOT expected to match here -- see the baked-in-path note above.
-EXPECT_LOCAL=f87f43d4cc2d80d8bf35811c8bf87ce11d047e0d5adf8aa9eb0170e34d9a82b0
+# The boot2==boot3 fixpoint sha is prefix-specific (each boot round bakes this
+# build tree's absolute CONFIG_* paths and -g debug paths into the binary), so
+# it is reproducible across re-runs on the same runner layout but differs between
+# machines. We do NOT hard-pin it -- the portable assertion is the boot2==boot3
+# PROPERTY below. This run logs the observed twelve-patch anchor; the README
+# records the value seen on the GitHub-hosted runner.
 
 PREFIX="$WORK/tcc-prefix"
 LIBDIR="$PREFIX/lib/mes"
@@ -58,7 +61,7 @@ else
   msg "mes/0001 already present in MesCC compile.scm"
 fi
 
-# ---- fresh tcc tree; apply the full canonical series 0001-0010 --------------
+# ---- fresh tcc tree; apply the full canonical series 0001-0012 --------------
 TCCDIR="$WORK/tcc-fixpoint"
 rm -rf "${TCCDIR:?}"
 tar -C "$WORK" -xzf "$WORK/$TCC_PKG.tar.gz"
@@ -68,7 +71,7 @@ cd "$TCCDIR"
 for p in "$HERE"/patches/tinycc/00*.patch; do
   patch -p1 < "$p" >/dev/null || die "failed to apply $(basename "$p")"
 done
-msg "applied tinycc patches 0001-0010 ($(ls "$HERE"/patches/tinycc/00*.patch | wc -l) patches)"
+msg "applied tinycc patches 0001-0012 ($(ls "$HERE"/patches/tinycc/00*.patch | wc -l) patches)"
 
 # ---- MesCC -S tcc.c -> tcc.s (armv7l EABI+VFP, BOOTSTRAP) --------------------
 compile_S() {
@@ -339,18 +342,14 @@ msg "self-host sha set:"; (cd "$BINDIR" && sha256sum tcc-mes $(ls -v tcc-boot? 2
 [ -n "$converged" ] || die "self-host FIXPOINT FAILED: no two successive generations identical within $FIXMAX rounds"
 msg "self-host FIXPOINT: $converged byte-identical"
 
-# Informational: compare boot2 to the local-lineage reference. A DIFFERENCE is
-# expected and benign -- the boot binaries bake in this build tree's absolute
-# paths (CONFIG_TCCDIR/CONFIG_TCC_LIBPATHS/... and -g), so the fixpoint sha is
-# location-specific. The PROPERTY (asserted above) is what proves self-host.
+# Informational: record the observed twelve-patch boot2==boot3 anchor. This sha
+# is location-specific (baked-in build paths) -- reproducible on the same runner
+# layout, different elsewhere; the PROPERTY asserted above is what proves
+# self-host. The README pins the value this job produces on the GitHub runner.
 if [ -f "$BINDIR/tcc-boot2" ]; then
   got=$(sha256sum "$BINDIR/tcc-boot2" | cut -d' ' -f1)
-  if [ "$got" = "$EXPECT_LOCAL" ]; then
-    msg "boot2 == local-lineage reference $EXPECT_LOCAL (identical build layout)"
-  else
-    msg "boot2 = $got (differs from local reference $EXPECT_LOCAL — expected: baked-in build paths differ; the fixpoint PROPERTY holds regardless)"
-  fi
+  msg "twelve-patch boot2==boot3 anchor (this run, prefix-specific): $got"
 fi
 echo
-echo "PASS: from the hex0 seed, mes/0001 + tinycc 0001-0010 -> a MesCC-built tcc"
+echo "PASS: from the hex0 seed, mes/0001 + tinycc 0001-0012 -> a MesCC-built tcc"
 echo "      that self-hosts to a byte-identical fixpoint on armv7l."

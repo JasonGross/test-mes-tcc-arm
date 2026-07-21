@@ -1,6 +1,6 @@
 name: self-host fixpoint
 
-# The full-series (mes/0001 + tinycc 0001-0010) from-seed self-host fixpoint,
+# The full-series (mes/0001 + tinycc 0001-0012) from-seed self-host fixpoint,
 # in its OWN workflow so its multi-hour run is decoupled from the bug-demo
 # matrix in ci.yml: iterating fixpoint.sh here does not re-trigger those jobs,
 # and ci.yml's paths-ignore skips this file in turn. Triggered only by changes
@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   fixpoint:
-    name: "fixpoint (mes/0001 + tinycc 0001-0010 -> boot2==boot3 self-host)"
+    name: "fixpoint (mes/0001 + tinycc 0001-0012 -> boot2==boot3 self-host)"
     runs-on: ubuntu-latest
     # Nominal ~3.5-4h on a GitHub runner; 350 keeps an explicit ceiling ~10 min
     # under GitHub's hard 6h job cap, so a wedged run trips this timeout with a
@@ -39,5 +39,5 @@ jobs:
           sudo apt-get install -y -q qemu-user-static binutils-arm-linux-gnueabihf
       - name: Bootstrap (stage0 hex0 seed -> armv7l mes-m2 -> nyacc -> fetch tcc)
         run: ./bootstrap.sh
-      - name: "Self-host fixpoint (mes/0001 + tinycc 0001-0010, boot0->boot3)"
+      - name: "Self-host fixpoint (mes/0001 + tinycc 0001-0012, boot0->boot3)"
         run: ./fixpoint.sh
